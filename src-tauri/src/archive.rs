@@ -1,8 +1,9 @@
 use serde::{Deserialize, Serialize};
 use std::{
     ffi::OsString,
-    fmt, fs,
-    io::Write,
+    fmt,
+    fs::{self, File, OpenOptions},
+    io::{Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
     process::{Child, Command, ExitStatus, Output, Stdio},
 };
@@ -69,7 +70,18 @@ pub struct CreationPlan {
     pub root: PathBuf,
     pub total_bytes: u64,
     pub skipped_links: usize,
+    pub(crate) names: Vec<String>,
     listfile: tempfile::NamedTempFile,
+}
+
+#[derive(Debug)]
+pub(crate) struct DeletionPlan {
+    listfile: tempfile::NamedTempFile,
+}
+
+#[derive(Debug)]
+pub(crate) struct RenamePlan {
+    pairs: Vec<(String, String)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -181,12 +193,6 @@ pub fn list_archive(
 }
 
 pub fn prepare_creation(inputs: &[PathBuf], output: &Path) -> Result<CreationPlan, ArchiveError> {
-    if inputs.is_empty() {
-        return Err(ArchiveError::new(
-            "no_inputs",
-            "Choose at least one file or folder to archive",
-        ));
-    }
     if !output.is_absolute() || output.file_name().is_none() {
         return Err(ArchiveError::new(
             "invalid_destination",
@@ -225,6 +231,36 @@ pub fn prepare_creation(inputs: &[PathBuf], output: &Path) -> Result<CreationPla
         ));
     }
 
+    prepare_inputs(
+        inputs,
+        Some(&output_parent.join(output.file_name().unwrap())),
+    )
+}
+
+pub(crate) fn prepare_addition(
+    inputs: &[PathBuf],
+    archive: &Path,
+) -> Result<CreationPlan, ArchiveError> {
+    let archive = archive.canonicalize().map_err(|error| {
+        ArchiveError::new(
+            "archive_not_found",
+            format!("Could not resolve the archive being modified: {error}"),
+        )
+    })?;
+    prepare_inputs(inputs, Some(&archive))
+}
+
+fn prepare_inputs(
+    inputs: &[PathBuf],
+    excluded: Option<&Path>,
+) -> Result<CreationPlan, ArchiveError> {
+    if inputs.is_empty() {
+        return Err(ArchiveError::new(
+            "no_inputs",
+            "Choose at least one file or folder to archive",
+        ));
+    }
+
     let mut canonical = Vec::with_capacity(inputs.len());
     let mut skipped_links = 0;
     for input in inputs {
@@ -250,18 +286,15 @@ pub fn prepare_creation(inputs: &[PathBuf], output: &Path) -> Result<CreationPla
                 format!("Could not resolve {}: {error}", input.display()),
             )
         })?;
-        if path == output_parent.join(output.file_name().unwrap()) {
-            return Err(ArchiveError::new(
-                "source_overlap",
-                "The output archive cannot replace an input file",
-            ));
+        if excluded.is_some_and(|excluded| path == excluded) {
+            continue;
         }
         canonical.push(path);
     }
     if canonical.is_empty() {
         return Err(ArchiveError::new(
             "no_safe_inputs",
-            "Every selected input was a symbolic link",
+            "No safe inputs remain after excluding links and the archive itself",
         ));
     }
     ensure_same_filesystem(&canonical)?;
@@ -308,6 +341,7 @@ pub fn prepare_creation(inputs: &[PathBuf], output: &Path) -> Result<CreationPla
         collect_creation_entries(
             &path,
             &root,
+            excluded,
             &mut names,
             &mut total_bytes,
             &mut skipped_links,
@@ -320,7 +354,7 @@ pub fn prepare_creation(inputs: &[PathBuf], output: &Path) -> Result<CreationPla
         )
     })?;
     for name in &names {
-        writeln!(listfile, "{}", name.to_string_lossy()).map_err(|error| {
+        writeln!(listfile, "{name}").map_err(|error| {
             ArchiveError::new(
                 "staging_failed",
                 format!("Could not write the archive input list: {error}"),
@@ -338,6 +372,7 @@ pub fn prepare_creation(inputs: &[PathBuf], output: &Path) -> Result<CreationPla
         root,
         total_bytes,
         skipped_links,
+        names,
         listfile,
     })
 }
@@ -348,28 +383,33 @@ pub fn create_archive(
     plan: &CreationPlan,
     format: ArchiveFormat,
     compression: CompressionLevel,
+    volume_size: Option<u64>,
     password: Option<&str>,
 ) -> Result<Output, ArchiveError> {
+    validate_volume_size(volume_size)?;
     run(
         binary,
-        &create_args(archive, plan, format, compression, password),
+        &create_args(archive, plan, format, compression, volume_size, password),
         password,
         Some(&plan.root),
     )
 }
 
+#[allow(clippy::too_many_arguments)] // The arguments map directly to one 7-Zip process.
 pub(crate) fn spawn_create(
     binary: &Path,
     archive: &Path,
     plan: &CreationPlan,
     format: ArchiveFormat,
     compression: CompressionLevel,
+    volume_size: Option<u64>,
     password: Option<&str>,
     output: (Stdio, Stdio),
 ) -> Result<Child, ArchiveError> {
+    validate_volume_size(volume_size)?;
     spawn_command(
         binary,
-        &create_args(archive, plan, format, compression, password),
+        &create_args(archive, plan, format, compression, volume_size, password),
         password,
         Some(&plan.root),
         output.0,
@@ -452,6 +492,266 @@ pub fn test_archive(
     run(binary, &args, password, None)
 }
 
+pub(crate) fn writable_format(path: &Path) -> Option<ArchiveFormat> {
+    match path.extension()?.to_str()?.to_ascii_lowercase().as_str() {
+        "zip" => Some(ArchiveFormat::Zip),
+        "7z" => Some(ArchiveFormat::SevenZip),
+        _ => None,
+    }
+}
+
+pub(crate) fn prepare_deletion(entries: &[String]) -> Result<DeletionPlan, ArchiveError> {
+    if entries.is_empty() {
+        return Err(ArchiveError::new(
+            "no_entries",
+            "Select at least one archive entry to delete",
+        ));
+    }
+    let mut listfile = tempfile::NamedTempFile::new().map_err(|error| {
+        ArchiveError::new(
+            "staging_failed",
+            format!("Could not create an archive entry list: {error}"),
+        )
+    })?;
+    for entry in entries {
+        if entry.is_empty() || entry.contains(['\n', '\r']) {
+            return Err(ArchiveError::new(
+                "unsafe_path",
+                "Archive entry names cannot be empty or contain line breaks",
+            ));
+        }
+        writeln!(listfile, "{entry}").map_err(|error| {
+            ArchiveError::new(
+                "staging_failed",
+                format!("Could not write the archive entry list: {error}"),
+            )
+        })?;
+    }
+    listfile.flush().map_err(|error| {
+        ArchiveError::new(
+            "staging_failed",
+            format!("Could not finish the archive entry list: {error}"),
+        )
+    })?;
+    Ok(DeletionPlan { listfile })
+}
+
+pub(crate) fn spawn_delete(
+    binary: &Path,
+    archive: &Path,
+    plan: &DeletionPlan,
+    password: Option<&str>,
+    stdout: Stdio,
+    stderr: Stdio,
+) -> Result<Child, ArchiveError> {
+    require_file(archive)?;
+    spawn_command(
+        binary,
+        &delete_args(archive, plan, password),
+        password,
+        None,
+        stdout,
+        stderr,
+    )
+}
+
+#[cfg(test)]
+pub(crate) fn delete_entries(
+    binary: &Path,
+    archive: &Path,
+    plan: &DeletionPlan,
+    password: Option<&str>,
+) -> Result<Output, ArchiveError> {
+    require_file(archive)?;
+    run(
+        binary,
+        &delete_args(archive, plan, password),
+        password,
+        None,
+    )
+}
+
+pub(crate) fn spawn_rename(
+    binary: &Path,
+    archive: &Path,
+    plan: &RenamePlan,
+    password: Option<&str>,
+    stdout: Stdio,
+    stderr: Stdio,
+) -> Result<Child, ArchiveError> {
+    require_file(archive)?;
+    spawn_command(
+        binary,
+        &rename_args(archive, plan, password),
+        password,
+        None,
+        stdout,
+        stderr,
+    )
+}
+
+#[cfg(test)]
+pub(crate) fn rename_entries(
+    binary: &Path,
+    archive: &Path,
+    plan: &RenamePlan,
+    password: Option<&str>,
+) -> Result<Output, ArchiveError> {
+    require_file(archive)?;
+    run(
+        binary,
+        &rename_args(archive, plan, password),
+        password,
+        None,
+    )
+}
+
+pub(crate) fn prepare_rename(pairs: Vec<(String, String)>) -> Result<RenamePlan, ArchiveError> {
+    if pairs.is_empty()
+        || pairs.iter().any(|(from, to)| {
+            from.is_empty()
+                || to.is_empty()
+                || from.contains(['\n', '\r'])
+                || to.contains(['\n', '\r'])
+        })
+    {
+        return Err(ArchiveError::new(
+            "unsafe_path",
+            "Archive rename paths cannot be empty or contain line breaks",
+        ));
+    }
+    Ok(RenamePlan { pairs })
+}
+
+pub(crate) fn read_zip_comment(path: &Path) -> Result<Option<String>, ArchiveError> {
+    if writable_format(path) != Some(ArchiveFormat::Zip) {
+        return Ok(None);
+    }
+    let (comment_offset, comment_len) = zip_comment_location(path)?;
+    if comment_len == 0 {
+        return Ok(None);
+    }
+    let mut file = File::open(path).map_err(|error| {
+        ArchiveError::new(
+            "archive_not_found",
+            format!("Could not read ZIP comment: {error}"),
+        )
+    })?;
+    file.seek(SeekFrom::Start(comment_offset))
+        .map_err(|error| {
+            ArchiveError::new(
+                "engine_protocol",
+                format!("Could not locate ZIP comment: {error}"),
+            )
+        })?;
+    let mut comment = vec![0; comment_len];
+    file.read_exact(&mut comment).map_err(|error| {
+        ArchiveError::new(
+            "engine_protocol",
+            format!("Could not read ZIP comment: {error}"),
+        )
+    })?;
+    Ok(Some(String::from_utf8_lossy(&comment).into_owned()))
+}
+
+pub(crate) fn set_zip_comment(path: &Path, comment: &str) -> Result<(), ArchiveError> {
+    if writable_format(path) != Some(ArchiveFormat::Zip) {
+        return Err(ArchiveError::new(
+            "comment_unsupported",
+            "Comments can only be edited in single-volume ZIP archives",
+        ));
+    }
+    let bytes = comment.as_bytes();
+    if bytes.len() > u16::MAX as usize {
+        return Err(ArchiveError::new(
+            "comment_too_long",
+            "ZIP comments cannot exceed 65,535 UTF-8 bytes",
+        ));
+    }
+    let (comment_offset, _) = zip_comment_location(path)?;
+    let eocd_offset = comment_offset - 22;
+    let mut file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)
+        .map_err(|error| {
+            ArchiveError::new(
+                "archive_not_writable",
+                format!("Could not edit ZIP comment: {error}"),
+            )
+        })?;
+    file.set_len(eocd_offset + 22).map_err(|error| {
+        ArchiveError::new(
+            "archive_not_writable",
+            format!("Could not resize ZIP comment: {error}"),
+        )
+    })?;
+    file.seek(SeekFrom::Start(eocd_offset + 20))
+        .and_then(|_| file.write_all(&(bytes.len() as u16).to_le_bytes()))
+        .and_then(|_| file.seek(SeekFrom::Start(eocd_offset + 22)).map(|_| ()))
+        .and_then(|_| file.write_all(bytes))
+        .and_then(|_| file.sync_all())
+        .map_err(|error| {
+            ArchiveError::new(
+                "archive_not_writable",
+                format!("Could not save ZIP comment: {error}"),
+            )
+        })
+}
+
+fn zip_comment_location(path: &Path) -> Result<(u64, usize), ArchiveError> {
+    require_file(path)?;
+    let mut file = File::open(path).map_err(|error| {
+        ArchiveError::new(
+            "archive_not_found",
+            format!("Could not inspect ZIP comment: {error}"),
+        )
+    })?;
+    let len = file
+        .metadata()
+        .map_err(|error| {
+            ArchiveError::new(
+                "archive_not_found",
+                format!("Could not inspect ZIP comment: {error}"),
+            )
+        })?
+        .len();
+    let tail_len = len.min(65_557) as usize;
+    if tail_len < 22 {
+        return Err(ArchiveError::new(
+            "engine_protocol",
+            "ZIP end record was not found",
+        ));
+    }
+    file.seek(SeekFrom::End(-(tail_len as i64)))
+        .map_err(|error| {
+            ArchiveError::new(
+                "engine_protocol",
+                format!("Could not inspect ZIP end record: {error}"),
+            )
+        })?;
+    let mut tail = vec![0; tail_len];
+    file.read_exact(&mut tail).map_err(|error| {
+        ArchiveError::new(
+            "engine_protocol",
+            format!("Could not inspect ZIP end record: {error}"),
+        )
+    })?;
+    for index in (0..=tail_len - 22).rev() {
+        if tail[index..index + 4] != *b"PK\x05\x06" {
+            continue;
+        }
+        let comment_len = u16::from_le_bytes([tail[index + 20], tail[index + 21]]) as usize;
+        if index + 22 + comment_len == tail_len {
+            return Ok((len - tail_len as u64 + index as u64 + 22, comment_len));
+        }
+    }
+    Err(ArchiveError::new(
+        "engine_protocol",
+        "ZIP end record was not found",
+    ))
+}
+
 pub(crate) fn spawn_test(
     binary: &Path,
     archive: &Path,
@@ -508,11 +808,41 @@ fn extract_args(archive: &Path, destination: &Path, entries: &[String]) -> Vec<O
     args
 }
 
+fn delete_args(archive: &Path, plan: &DeletionPlan, password: Option<&str>) -> Vec<OsString> {
+    let mut args = vec![
+        "d".into(),
+        "-bsp1".into(),
+        "-bb1".into(),
+        "-y".into(),
+        "-scsUTF-8".into(),
+        format!("-i@{}", plan.listfile.path().display()).into(),
+    ];
+    if password.is_some_and(|value| !value.is_empty()) {
+        args.push("-p".into());
+    }
+    args.push("--".into());
+    args.push(archive.as_os_str().to_owned());
+    args
+}
+
+fn rename_args(archive: &Path, plan: &RenamePlan, password: Option<&str>) -> Vec<OsString> {
+    let mut args = vec!["rn".into(), "-bsp1".into(), "-bb1".into(), "-y".into()];
+    if password.is_some_and(|value| !value.is_empty()) {
+        args.push("-p".into());
+    }
+    args.extend(["--".into(), archive.as_os_str().to_owned()]);
+    for (from, to) in &plan.pairs {
+        args.extend([from.into(), to.into()]);
+    }
+    args
+}
+
 fn create_args(
     archive: &Path,
     plan: &CreationPlan,
     format: ArchiveFormat,
     compression: CompressionLevel,
+    volume_size: Option<u64>,
     password: Option<&str>,
 ) -> Vec<OsString> {
     let mut args = vec![
@@ -525,6 +855,9 @@ fn create_args(
         "-scsUTF-8".into(),
         format!("-i@{}", plan.listfile.path().display()).into(),
     ];
+    if let Some(bytes) = volume_size {
+        args.push(format!("-v{bytes}b").into());
+    }
     if password.is_some_and(|value| !value.is_empty()) {
         args.push("-p".into());
         match format {
@@ -537,13 +870,80 @@ fn create_args(
     args
 }
 
+pub(crate) fn validate_volume_size(volume_size: Option<u64>) -> Result<(), ArchiveError> {
+    if volume_size.is_some_and(|bytes| !(1024..=1024_u64.pow(4)).contains(&bytes)) {
+        Err(ArchiveError::new(
+            "invalid_volume_size",
+            "Archive volumes must be between 1 KiB and 1 TiB",
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+pub(crate) fn generated_archive_paths(
+    base: &Path,
+    volume_size: Option<u64>,
+) -> Result<Vec<PathBuf>, ArchiveError> {
+    if volume_size.is_none() {
+        return if base.is_file() {
+            Ok(vec![base.to_path_buf()])
+        } else {
+            Err(ArchiveError::new(
+                "creation_failed",
+                "The archive engine did not produce the requested output",
+            ))
+        };
+    }
+    let parent = base.parent().ok_or_else(|| {
+        ArchiveError::new("creation_failed", "The archive output has no parent folder")
+    })?;
+    let prefix = format!("{}.", base.file_name().unwrap().to_string_lossy());
+    let mut paths = fs::read_dir(parent)
+        .map_err(|error| {
+            ArchiveError::new(
+                "creation_failed",
+                format!("Could not inspect archive volumes: {error}"),
+            )
+        })?
+        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+        .filter(|path| {
+            path.file_name()
+                .and_then(|value| value.to_str())
+                .is_some_and(|name| {
+                    name.strip_prefix(&prefix).is_some_and(|suffix| {
+                        suffix.len() == 3 && suffix.bytes().all(|byte| byte.is_ascii_digit())
+                    })
+                })
+        })
+        .collect::<Vec<_>>();
+    paths.sort();
+    let first_name = format!("{prefix}001");
+    if paths
+        .first()
+        .and_then(|path| path.file_name())
+        .and_then(|value| value.to_str())
+        != Some(first_name.as_str())
+    {
+        return Err(ArchiveError::new(
+            "creation_failed",
+            "The archive engine did not produce a complete volume set",
+        ));
+    }
+    Ok(paths)
+}
+
 fn collect_creation_entries(
     path: &Path,
     root: &Path,
-    names: &mut Vec<OsString>,
+    excluded: Option<&Path>,
+    names: &mut Vec<String>,
     total_bytes: &mut u64,
     skipped_links: &mut usize,
 ) -> Result<bool, ArchiveError> {
+    if excluded.is_some_and(|excluded| path == excluded) {
+        return Ok(false);
+    }
     let metadata = fs::symlink_metadata(path).map_err(|error| {
         ArchiveError::new(
             "invalid_source",
@@ -585,7 +985,7 @@ fn collect_creation_entries(
     let mut included_child = false;
     for child in children {
         included_child |=
-            collect_creation_entries(&child, root, names, total_bytes, skipped_links)?;
+            collect_creation_entries(&child, root, excluded, names, total_bytes, skipped_links)?;
     }
     if !included_child {
         names.push(relative_creation_name(path, root)?);
@@ -593,7 +993,7 @@ fn collect_creation_entries(
     Ok(true)
 }
 
-fn relative_creation_name(path: &Path, root: &Path) -> Result<OsString, ArchiveError> {
+fn relative_creation_name(path: &Path, root: &Path) -> Result<String, ArchiveError> {
     let relative = path.strip_prefix(root).map_err(|_| {
         ArchiveError::new("invalid_source", "Could not derive a relative archive path")
     })?;
@@ -609,7 +1009,7 @@ fn relative_creation_name(path: &Path, root: &Path) -> Result<OsString, ArchiveE
             "Archive input names cannot be empty or contain line breaks",
         ));
     }
-    Ok(relative.as_os_str().to_owned())
+    Ok(name.to_string())
 }
 
 #[cfg(unix)]
@@ -716,7 +1116,15 @@ fn spawn_command(
     })?;
 
     if let Some(password) = password {
-        write_password(&mut child, password)?;
+        let prompts = if args
+            .first()
+            .is_some_and(|command| matches!(command.to_string_lossy().as_ref(), "a" | "d" | "rn"))
+        {
+            2
+        } else {
+            1
+        };
+        write_password(&mut child, password, prompts)?;
     }
     Ok(child)
 }
@@ -771,22 +1179,22 @@ fn classify_failure_parts(status: &ExitStatus, stdout: &str, stderr: &str) -> Ar
     ArchiveError::new(code, message)
 }
 
-fn write_password(child: &mut Child, password: &str) -> Result<(), ArchiveError> {
+fn write_password(child: &mut Child, password: &str, prompts: usize) -> Result<(), ArchiveError> {
     let mut stdin = child.stdin.take().ok_or_else(|| {
         ArchiveError::new("engine_unavailable", "7-Zip password input was unavailable")
     })?;
-    stdin.write_all(password.as_bytes()).map_err(|error| {
-        ArchiveError::new(
-            "engine_unavailable",
-            format!("Failed to send password to 7-Zip: {error}"),
-        )
-    })?;
-    stdin.write_all(b"\n").map_err(|error| {
-        ArchiveError::new(
-            "engine_unavailable",
-            format!("Failed to send password to 7-Zip: {error}"),
-        )
-    })
+    for _ in 0..prompts {
+        stdin
+            .write_all(password.as_bytes())
+            .and_then(|()| stdin.write_all(b"\n"))
+            .map_err(|error| {
+                ArchiveError::new(
+                    "engine_unavailable",
+                    format!("Failed to send password to 7-Zip: {error}"),
+                )
+            })?;
+    }
+    Ok(())
 }
 
 fn parse_slt(text: &str, fallback_path: Option<&str>) -> Result<Vec<ArchiveEntry>, ArchiveError> {
@@ -965,6 +1373,7 @@ mod tests {
             &plan,
             ArchiveFormat::SevenZip,
             CompressionLevel::Normal,
+            None,
             Some("sprint1-password"),
         )
         .unwrap();
@@ -978,6 +1387,130 @@ mod tests {
             fs::read_to_string(destination.join("hello = नमस्ते.txt")).unwrap(),
             "archive engine contract"
         );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn safely_adds_deletes_renames_and_comments_without_mutating_in_place() {
+        let root = scratch("rewrite");
+        let engine = bundled_engine().unwrap();
+        for (name, format) in [
+            ("editable.zip", ArchiveFormat::Zip),
+            ("editable.7z", ArchiveFormat::SevenZip),
+        ] {
+            let password = (format == ArchiveFormat::SevenZip).then_some("rewrite-password");
+            let archive = root.join(name);
+            let first = root.join(format!("{name}-first.txt"));
+            let keep = root.join(format!("{name}-keep.txt"));
+            let added = root.join(format!("{name}-added.txt"));
+            fs::write(&first, "delete me").unwrap();
+            fs::write(&keep, "rename me").unwrap();
+            fs::write(&added, "added").unwrap();
+            let plan = prepare_creation(&[first.clone(), keep.clone()], &archive).unwrap();
+            create_archive(
+                &engine,
+                &archive,
+                &plan,
+                format,
+                CompressionLevel::Normal,
+                None,
+                password,
+            )
+            .unwrap();
+
+            let rewrite = crate::safe_paths::ArchiveRewrite::create(&archive).unwrap();
+            let plan = prepare_addition(std::slice::from_ref(&added), &archive).unwrap();
+            create_archive(
+                &engine,
+                rewrite.path(),
+                &plan,
+                format,
+                CompressionLevel::Normal,
+                None,
+                password,
+            )
+            .unwrap();
+            test_archive(&engine, rewrite.path(), password).unwrap();
+            rewrite.commit().unwrap();
+
+            let first_name = first.file_name().unwrap().to_string_lossy().into_owned();
+            let keep_name = keep.file_name().unwrap().to_string_lossy().into_owned();
+            let added_name = added.file_name().unwrap().to_string_lossy().into_owned();
+            let rewrite = crate::safe_paths::ArchiveRewrite::create(&archive).unwrap();
+            let deletion = prepare_deletion(std::slice::from_ref(&first_name)).unwrap();
+            delete_entries(&engine, rewrite.path(), &deletion, password).unwrap();
+            test_archive(&engine, rewrite.path(), password).unwrap();
+            rewrite.commit().unwrap();
+
+            let renamed = format!("renamed-{name}.txt");
+            let rewrite = crate::safe_paths::ArchiveRewrite::create(&archive).unwrap();
+            let rename = prepare_rename(vec![(keep_name.clone(), renamed.clone())]).unwrap();
+            rename_entries(&engine, rewrite.path(), &rename, password).unwrap();
+            test_archive(&engine, rewrite.path(), password).unwrap();
+            rewrite.commit().unwrap();
+            let paths = list_archive(&engine, &archive, password)
+                .unwrap()
+                .into_iter()
+                .map(|entry| entry.path)
+                .collect::<Vec<_>>();
+            assert!(!paths.contains(&first_name));
+            assert!(!paths.contains(&keep_name));
+            assert!(paths.contains(&added_name));
+            assert!(paths.contains(&renamed));
+
+            if format == ArchiveFormat::Zip {
+                let rewrite = crate::safe_paths::ArchiveRewrite::create(&archive).unwrap();
+                set_zip_comment(rewrite.path(), "Sprint 7 comment = नमस्ते").unwrap();
+                test_archive(&engine, rewrite.path(), None).unwrap();
+                rewrite.commit().unwrap();
+                assert_eq!(
+                    read_zip_comment(&archive).unwrap().as_deref(),
+                    Some("Sprint 7 comment = नमस्ते")
+                );
+            }
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn creates_installs_and_extracts_zip_and_7z_volume_sets() {
+        let root = scratch("volumes");
+        let engine = bundled_engine().unwrap();
+        let payload = root.join("payload.bin");
+        fs::write(&payload, vec![0x5a; 40 * 1024]).unwrap();
+        for (name, format) in [
+            ("split.zip", ArchiveFormat::Zip),
+            ("split.7z", ArchiveFormat::SevenZip),
+        ] {
+            let workspace = root.join(format!("work-{name}"));
+            let installed = root.join(format!("installed-{name}"));
+            let extracted = root.join(format!("extracted-{name}"));
+            fs::create_dir(&workspace).unwrap();
+            let base = workspace.join(name);
+            let output = installed.join(name);
+            fs::create_dir(&installed).unwrap();
+            let plan = prepare_creation(std::slice::from_ref(&payload), &base).unwrap();
+            create_archive(
+                &engine,
+                &base,
+                &plan,
+                format,
+                CompressionLevel::Store,
+                Some(8 * 1024),
+                None,
+            )
+            .unwrap();
+            let volumes = generated_archive_paths(&base, Some(8 * 1024)).unwrap();
+            assert!(volumes.len() > 1);
+            let installed =
+                crate::safe_paths::install_created_archives(&volumes, &base, &output).unwrap();
+            test_archive(&engine, &installed[0], None).unwrap();
+            extract_archive(&engine, &installed[0], &extracted, None).unwrap();
+            assert_eq!(
+                fs::read(extracted.join("payload.bin")).unwrap().len(),
+                40 * 1024
+            );
+        }
         fs::remove_dir_all(root).unwrap();
     }
 

@@ -51,7 +51,10 @@ pub(crate) async fn open_archive(
             &archive_path,
             password.as_ref().map(|value| value.as_str()),
         )?;
-        archives.install(path, data.engine_version().to_string(), entries)
+        let mut document = archives.install(path, data.engine_version().to_string(), entries)?;
+        document.comment = archive::read_zip_comment(&archive_path).ok().flatten();
+        let _ = data.record_recent(&archive_path);
+        Ok(document)
     })
     .await
     .map_err(task_error)?
@@ -134,6 +137,7 @@ pub(crate) async fn create_archive(
     output: String,
     format: ArchiveFormat,
     compression: CompressionLevel,
+    volume_size: Option<u64>,
     password: Option<String>,
     password_confirmation: Option<String>,
 ) -> Result<ArchiveDocument, ArchiveError> {
@@ -148,6 +152,7 @@ pub(crate) async fn create_archive(
             let password = confirmed_password(&password, &confirmation)?;
             let output_path = PathBuf::from(&output);
             format.validate_output(&output_path)?;
+            archive::validate_volume_size(volume_size)?;
             let plan = archive::prepare_creation(
                 &inputs.into_iter().map(PathBuf::from).collect::<Vec<_>>(),
                 &output_path,
@@ -174,18 +179,214 @@ pub(crate) async fn create_archive(
                 &plan,
                 format,
                 compression,
+                volume_size,
                 password,
             )?;
-            archive::test_archive(engine, &temporary, password)?;
-            let entries = archive::list_archive(engine, &temporary, password)?;
+            let generated = archive::generated_archive_paths(&temporary, volume_size)?;
+            let first_volume = generated[0].clone();
+            archive::test_archive(engine, &first_volume, password)?;
+            let entries = archive::list_archive(engine, &first_volume, password)?;
             safe_paths::validate_archive_entries(&entries)?;
-            safe_paths::install_created_archive(&temporary, &output_path)?;
+            let installed =
+                safe_paths::install_created_archives(&generated, &temporary, &output_path)?;
+            let installed_path = installed[0].to_string_lossy().into_owned();
             let mut document =
-                archives.install(output, data.engine_version().to_string(), entries)?;
+                archives.install(installed_path, data.engine_version().to_string(), entries)?;
             document.skipped_links = plan.skipped_links;
+            document.comment = archive::read_zip_comment(Path::new(&document.path))
+                .ok()
+                .flatten();
+            let _ = data.record_recent(Path::new(&document.path));
             Ok(document)
         })();
         result
+    })
+    .await
+    .map_err(task_error)?
+}
+
+#[tauri::command]
+pub(crate) async fn add_to_archive(
+    jobs: tauri::State<'_, JobManager>,
+    archives: tauri::State<'_, ArchiveStore>,
+    data: tauri::State<'_, LocalData>,
+    path: String,
+    inputs: Vec<String>,
+    compression: CompressionLevel,
+    password: Option<String>,
+) -> Result<ArchiveDocument, ArchiveError> {
+    let jobs = jobs.inner().clone();
+    let archives = archives.inner().clone();
+    let data = data.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let control = jobs.start("modify", 0)?;
+        let password = password.map(Zeroizing::new);
+        let password = password.as_ref().map(|value| value.as_str());
+        let archive_path = PathBuf::from(&path);
+        let format = require_writable_format(&archive_path)?;
+        let original_entries = archive::list_archive(data.engine_path(), &archive_path, password)?;
+        safe_paths::validate_archive_entries(&original_entries)?;
+        let plan = archive::prepare_addition(
+            &inputs.into_iter().map(PathBuf::from).collect::<Vec<_>>(),
+            &archive_path,
+        )?;
+        reject_addition_collisions(&plan.names, &original_entries)?;
+        control.set_total_bytes(plan.total_bytes);
+        let rewrite = safe_paths::ArchiveRewrite::create(&archive_path)?;
+        let candidate = (|| {
+            jobs::run_create(
+                &control,
+                data.engine_path(),
+                rewrite.path(),
+                &plan,
+                format,
+                compression,
+                None,
+                password,
+            )?;
+            archive::test_archive(data.engine_path(), rewrite.path(), password)?;
+            let entries = archive::list_archive(data.engine_path(), rewrite.path(), password)?;
+            safe_paths::validate_archive_entries(&entries)?;
+            Ok(entries)
+        })()
+        .map_err(|error| rewrite.recovery_error(error))?;
+        rewrite.commit()?;
+        install_modified_document(&archives, &data, path, candidate)
+    })
+    .await
+    .map_err(task_error)?
+}
+
+#[tauri::command]
+pub(crate) async fn delete_archive_entries(
+    jobs: tauri::State<'_, JobManager>,
+    archives: tauri::State<'_, ArchiveStore>,
+    data: tauri::State<'_, LocalData>,
+    path: String,
+    entries: Vec<String>,
+    password: Option<String>,
+) -> Result<ArchiveDocument, ArchiveError> {
+    let jobs = jobs.inner().clone();
+    let archives = archives.inner().clone();
+    let data = data.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let control = jobs.start("modify", 0)?;
+        let password = password.map(Zeroizing::new);
+        let password = password.as_ref().map(|value| value.as_str());
+        let archive_path = PathBuf::from(&path);
+        require_writable_format(&archive_path)?;
+        let original = archive::list_archive(data.engine_path(), &archive_path, password)?;
+        safe_paths::validate_archive_entries(&original)?;
+        let selected = modification_selection(&entries, &original)?;
+        control.set_total_bytes(selected_total(&selected, &original));
+        let plan = archive::prepare_deletion(&selected)?;
+        let rewrite = safe_paths::ArchiveRewrite::create(&archive_path)?;
+        let candidate = (|| {
+            jobs::run_delete(
+                &control,
+                data.engine_path(),
+                rewrite.path(),
+                &plan,
+                password,
+            )?;
+            archive::test_archive(data.engine_path(), rewrite.path(), password)?;
+            let entries = archive::list_archive(data.engine_path(), rewrite.path(), password)?;
+            safe_paths::validate_archive_entries(&entries)?;
+            Ok(entries)
+        })()
+        .map_err(|error| rewrite.recovery_error(error))?;
+        rewrite.commit()?;
+        install_modified_document(&archives, &data, path, candidate)
+    })
+    .await
+    .map_err(task_error)?
+}
+
+#[tauri::command]
+pub(crate) async fn rename_archive_entry(
+    jobs: tauri::State<'_, JobManager>,
+    archives: tauri::State<'_, ArchiveStore>,
+    data: tauri::State<'_, LocalData>,
+    path: String,
+    entry: String,
+    new_name: String,
+    password: Option<String>,
+) -> Result<ArchiveDocument, ArchiveError> {
+    let jobs = jobs.inner().clone();
+    let archives = archives.inner().clone();
+    let data = data.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let control = jobs.start("modify", 0)?;
+        let password = password.map(Zeroizing::new);
+        let password = password.as_ref().map(|value| value.as_str());
+        let archive_path = PathBuf::from(&path);
+        require_writable_format(&archive_path)?;
+        let original = archive::list_archive(data.engine_path(), &archive_path, password)?;
+        safe_paths::validate_archive_entries(&original)?;
+        let (plan, expected) = rename_plan(&original, &entry, &new_name)?;
+        control.set_total_bytes(selected_total(std::slice::from_ref(&entry), &original));
+        let rewrite = safe_paths::ArchiveRewrite::create(&archive_path)?;
+        let candidate = (|| {
+            jobs::run_rename(
+                &control,
+                data.engine_path(),
+                rewrite.path(),
+                &plan,
+                password,
+            )?;
+            archive::test_archive(data.engine_path(), rewrite.path(), password)?;
+            let entries = archive::list_archive(data.engine_path(), rewrite.path(), password)?;
+            safe_paths::validate_archive_entries(&entries)?;
+            if entry_paths(&entries) != entry_paths(&expected) {
+                return Err(ArchiveError::new(
+                    "rename_failed",
+                    "The archive engine did not produce the expected renamed entries",
+                ));
+            }
+            Ok(entries)
+        })()
+        .map_err(|error| rewrite.recovery_error(error))?;
+        rewrite.commit()?;
+        install_modified_document(&archives, &data, path, candidate)
+    })
+    .await
+    .map_err(task_error)?
+}
+
+#[tauri::command]
+pub(crate) async fn set_archive_comment(
+    jobs: tauri::State<'_, JobManager>,
+    archives: tauri::State<'_, ArchiveStore>,
+    data: tauri::State<'_, LocalData>,
+    path: String,
+    comment: String,
+    password: Option<String>,
+) -> Result<ArchiveDocument, ArchiveError> {
+    let jobs = jobs.inner().clone();
+    let archives = archives.inner().clone();
+    let data = data.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let _control = jobs.start("modify", 0)?;
+        let password = password.map(Zeroizing::new);
+        let password = password.as_ref().map(|value| value.as_str());
+        let archive_path = PathBuf::from(&path);
+        if require_writable_format(&archive_path)? != ArchiveFormat::Zip {
+            return Err(ArchiveError::new(
+                "comment_unsupported",
+                "Comments can only be edited in single-volume ZIP archives",
+            ));
+        }
+        let rewrite = safe_paths::ArchiveRewrite::create(&archive_path)?;
+        let candidate = (|| {
+            archive::set_zip_comment(rewrite.path(), &comment)?;
+            archive::test_archive(data.engine_path(), rewrite.path(), password)?;
+            let entries = archive::list_archive(data.engine_path(), rewrite.path(), password)?;
+            safe_paths::validate_archive_entries(&entries)?;
+            Ok(entries)
+        })()
+        .map_err(|error| rewrite.recovery_error(error))?;
+        rewrite.commit()?;
+        install_modified_document(&archives, &data, path, candidate)
     })
     .await
     .map_err(task_error)?
@@ -300,6 +501,18 @@ pub(crate) fn save_settings(
 #[tauri::command]
 pub(crate) fn reset_settings(data: tauri::State<'_, LocalData>) -> Result<Settings, ArchiveError> {
     data.reset()
+}
+
+#[tauri::command]
+pub(crate) fn recent_archives(
+    data: tauri::State<'_, LocalData>,
+) -> Result<Vec<String>, ArchiveError> {
+    data.recent_archives()
+}
+
+#[tauri::command]
+pub(crate) fn clear_recent_archives(data: tauri::State<'_, LocalData>) -> Result<(), ArchiveError> {
+    data.clear_recent_archives()
 }
 
 #[tauri::command]
@@ -427,6 +640,150 @@ fn unique_output(parent: &Path, base: &str) -> Result<PathBuf, ArchiveError> {
         "output_exists",
         "Could not find an available ZIP filename",
     ))
+}
+
+fn require_writable_format(path: &Path) -> Result<ArchiveFormat, ArchiveError> {
+    archive::writable_format(path).ok_or_else(|| {
+        ArchiveError::new(
+            "archive_not_writable",
+            "Only single-volume ZIP and 7z archives can be modified",
+        )
+    })
+}
+
+fn install_modified_document(
+    archives: &ArchiveStore,
+    data: &LocalData,
+    path: String,
+    entries: Vec<ArchiveEntry>,
+) -> Result<ArchiveDocument, ArchiveError> {
+    let mut document = archives.install(path, data.engine_version().to_string(), entries)?;
+    document.comment = archive::read_zip_comment(Path::new(&document.path))
+        .ok()
+        .flatten();
+    let _ = data.record_recent(Path::new(&document.path));
+    Ok(document)
+}
+
+fn modification_selection(
+    requested: &[String],
+    entries: &[ArchiveEntry],
+) -> Result<Vec<String>, ArchiveError> {
+    if requested.is_empty() {
+        return Err(ArchiveError::new(
+            "no_entries",
+            "Select at least one archive entry",
+        ));
+    }
+    let mut selected = HashSet::new();
+    for path in requested {
+        let prefix = format!("{}/", path.trim_end_matches('/'));
+        let matches = entries
+            .iter()
+            .filter(|entry| entry.path == *path || entry.path.starts_with(&prefix))
+            .map(|entry| entry.path.clone())
+            .collect::<Vec<_>>();
+        if matches.is_empty() {
+            return Err(ArchiveError::new(
+                "entry_not_found",
+                format!("The archive entry is no longer available: {path}"),
+            ));
+        }
+        selected.extend(matches);
+    }
+    let mut selected = selected.into_iter().collect::<Vec<_>>();
+    selected.sort();
+    Ok(selected)
+}
+
+fn reject_addition_collisions(
+    added: &[String],
+    existing: &[ArchiveEntry],
+) -> Result<(), ArchiveError> {
+    let existing = existing
+        .iter()
+        .map(|entry| entry.path.as_str())
+        .collect::<HashSet<_>>();
+    if let Some(path) = added.iter().find(|path| existing.contains(path.as_str())) {
+        Err(ArchiveError::new(
+            "entry_exists",
+            format!("An archive entry already exists at {path}. Rename or delete it before adding this item."),
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+fn rename_plan(
+    entries: &[ArchiveEntry],
+    from: &str,
+    new_name: &str,
+) -> Result<(archive::RenamePlan, Vec<ArchiveEntry>), ArchiveError> {
+    if new_name.is_empty()
+        || new_name.contains(['/', '\\', '\n', '\r'])
+        || new_name != new_name.trim()
+    {
+        return Err(ArchiveError::new(
+            "invalid_name",
+            "Enter one non-empty file or folder name without slashes or surrounding spaces",
+        ));
+    }
+    let prefix = format!("{}/", from.trim_end_matches('/'));
+    let matches = entries
+        .iter()
+        .filter(|entry| entry.path == from || entry.path.starts_with(&prefix))
+        .collect::<Vec<_>>();
+    if matches.is_empty() {
+        return Err(ArchiveError::new(
+            "entry_not_found",
+            "The archive entry is no longer available",
+        ));
+    }
+    let parent = from.rsplit_once('/').map(|(parent, _)| parent);
+    let to = parent
+        .map(|parent| format!("{parent}/{new_name}"))
+        .unwrap_or_else(|| new_name.to_string());
+    let mut expected = entries.to_vec();
+    for entry in &mut expected {
+        if entry.path == from {
+            entry.path.clone_from(&to);
+        } else if let Some(suffix) = entry.path.strip_prefix(&prefix) {
+            entry.path = format!("{to}/{suffix}");
+        }
+    }
+    safe_paths::validate_archive_entries(&expected)?;
+
+    let pairs = if matches.iter().any(|entry| entry.path == from) {
+        vec![(from.to_string(), to)]
+    } else {
+        let mut roots = Vec::<&ArchiveEntry>::new();
+        for entry in matches {
+            if roots
+                .iter()
+                .any(|root| root.is_directory && entry.path.starts_with(&format!("{}/", root.path)))
+            {
+                continue;
+            }
+            roots.push(entry);
+        }
+        roots
+            .into_iter()
+            .map(|entry| {
+                let suffix = entry.path.strip_prefix(&prefix).unwrap();
+                (entry.path.clone(), format!("{to}/{suffix}"))
+            })
+            .collect()
+    };
+    Ok((archive::prepare_rename(pairs)?, expected))
+}
+
+fn entry_paths(entries: &[ArchiveEntry]) -> Vec<String> {
+    let mut paths = entries
+        .iter()
+        .map(|entry| entry.path.clone())
+        .collect::<Vec<_>>();
+    paths.sort();
+    paths
 }
 
 fn confirmed_password<'a>(
@@ -631,6 +988,28 @@ mod tests {
             "expansion_size_unknown"
         );
         validate_expansion(&[], &[unknown], MIN_EXPANDED_BYTES, true).unwrap();
+
+        let implicit_folder = vec![
+            ArchiveEntry {
+                path: "folder/one.txt".to_string(),
+                ..entries[1].clone()
+            },
+            ArchiveEntry {
+                path: "folder/nested/two.txt".to_string(),
+                ..entries[1].clone()
+            },
+        ];
+        let (_, renamed) = rename_plan(&implicit_folder, "folder", "renamed").unwrap();
+        assert_eq!(
+            entry_paths(&renamed),
+            ["renamed/nested/two.txt", "renamed/one.txt"]
+        );
+        assert_eq!(
+            reject_addition_collisions(&["folder/file.txt".to_string()], &entries)
+                .unwrap_err()
+                .code,
+            "entry_exists"
+        );
     }
 
     #[test]

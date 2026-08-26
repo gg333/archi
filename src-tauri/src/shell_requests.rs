@@ -136,7 +136,7 @@ impl ShellRequestStore {
         ShellIntegrationStatus {
             available: cfg!(target_os = "macos"),
             provider_registered: self.0.provider_registered.load(Ordering::Relaxed),
-            document_extensions: if cfg!(target_os = "macos") { 17 } else { 0 },
+            document_extensions: if cfg!(target_os = "macos") { 18 } else { 0 },
             service_actions: if cfg!(target_os = "macos") { 5 } else { 0 },
         }
     }

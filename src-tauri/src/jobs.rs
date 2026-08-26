@@ -1,4 +1,6 @@
-use crate::archive::{self, ArchiveError, ArchiveFormat, CompressionLevel, CreationPlan};
+use crate::archive::{
+    self, ArchiveError, ArchiveFormat, CompressionLevel, CreationPlan, DeletionPlan, RenamePlan,
+};
 use serde::Serialize;
 use std::{
     fs::File,
@@ -310,6 +312,7 @@ pub(crate) fn run_extract(
     })
 }
 
+#[allow(clippy::too_many_arguments)] // Keep the job wrapper aligned with the archive process.
 pub(crate) fn run_create(
     control: &Arc<JobControl>,
     binary: &Path,
@@ -317,6 +320,7 @@ pub(crate) fn run_create(
     plan: &CreationPlan,
     format: ArchiveFormat,
     compression: CompressionLevel,
+    volume_size: Option<u64>,
     password: Option<&str>,
 ) -> Result<JobOutcome, ArchiveError> {
     run_worker(control, |stdout, stderr| {
@@ -326,6 +330,7 @@ pub(crate) fn run_create(
             plan,
             format,
             compression,
+            volume_size,
             password,
             (stdout, stderr),
         )
@@ -340,6 +345,30 @@ pub(crate) fn run_test(
 ) -> Result<JobOutcome, ArchiveError> {
     run_worker(control, |stdout, stderr| {
         archive::spawn_test(binary, archive_path, password, stdout, stderr)
+    })
+}
+
+pub(crate) fn run_delete(
+    control: &Arc<JobControl>,
+    binary: &Path,
+    archive_path: &Path,
+    plan: &DeletionPlan,
+    password: Option<&str>,
+) -> Result<JobOutcome, ArchiveError> {
+    run_worker(control, |stdout, stderr| {
+        archive::spawn_delete(binary, archive_path, plan, password, stdout, stderr)
+    })
+}
+
+pub(crate) fn run_rename(
+    control: &Arc<JobControl>,
+    binary: &Path,
+    archive_path: &Path,
+    plan: &RenamePlan,
+    password: Option<&str>,
+) -> Result<JobOutcome, ArchiveError> {
+    run_worker(control, |stdout, stderr| {
+        archive::spawn_rename(binary, archive_path, plan, password, stdout, stderr)
     })
 }
 

@@ -18,6 +18,9 @@ export interface ArchiveDocument {
   totalBytes: number;
   encrypted: boolean;
   skippedLinks: number;
+  comment: string | null;
+  canModify: boolean;
+  volumeCount: number;
 }
 
 export type SortKey = "name" | "size" | "packedSize" | "ratio" | "modified";
@@ -49,11 +52,14 @@ export interface Settings {
   version: 1;
   defaultFormat: ArchiveFormat;
   defaultCompression: CompressionLevel;
+  zipCompression: CompressionLevel;
+  sevenZipCompression: CompressionLevel;
   extractionDestination: ExtractionDestination;
   customDestination: string | null;
   revealOnCompletion: boolean;
   notifications: boolean;
   showHiddenEntries: boolean;
+  historyEnabled: boolean;
   maxExpandedBytes: number;
   maxConcurrentJobs: 1;
 }
@@ -66,7 +72,7 @@ export interface TestResult {
 
 export interface JobSnapshot {
   id: number;
-  operation: "create" | "extract" | "test";
+  operation: "create" | "extract" | "test" | "modify";
   phase: "preparing" | "running" | "finishing" | "cancelling" | "done";
   percent: number;
   processedBytes: number;

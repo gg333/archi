@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Archive App",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "identifier": "com.nitivar.archiver",
   "build": {
     "beforeDevCommand": "pnpm dev",
@@ -31,7 +31,7 @@
       {
         "ext": [
           "zip", "7z", "rar", "tar", "gz", "tgz", "bz2", "tbz2", "xz",
-          "txz", "zst", "cab", "iso", "lzh", "lha", "ar", "cpio"
+          "txz", "zst", "cab", "iso", "lzh", "lha", "ar", "cpio", "001"
         ],
         "contentTypes": ["public.archive"],
         "name": "Archive",

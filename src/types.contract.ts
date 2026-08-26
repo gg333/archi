@@ -20,6 +20,9 @@ export const archiveDocumentContract = {
   totalBytes: 1,
   encrypted: false,
   skippedLinks: 0,
+  comment: null,
+  canModify: true,
+  volumeCount: 1,
 } satisfies ArchiveDocument;
 
 export const entryPageContract = {
@@ -49,11 +52,14 @@ export const settingsContract = {
   version: 1,
   defaultFormat: "zip",
   defaultCompression: "normal",
+  zipCompression: "normal",
+  sevenZipCompression: "normal",
   extractionDestination: "ask",
   customDestination: null,
   revealOnCompletion: true,
   notifications: false,
   showHiddenEntries: false,
+  historyEnabled: true,
   maxExpandedBytes: 10 * 1024 ** 3,
   maxConcurrentJobs: 1,
 } satisfies Settings;

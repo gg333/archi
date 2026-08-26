@@ -36,6 +36,9 @@ pub(crate) struct ArchiveDocument {
     pub total_bytes: u64,
     pub encrypted: bool,
     pub skipped_links: usize,
+    pub comment: Option<String>,
+    pub can_modify: bool,
+    pub volume_count: usize,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize)]
@@ -174,7 +177,26 @@ fn summary(
         total_bytes: entries.iter().filter_map(|entry| entry.size).sum(),
         encrypted: entries.iter().any(|entry| entry.encrypted),
         skipped_links: 0,
+        comment: None,
+        can_modify: crate::archive::writable_format(Path::new(path)).is_some(),
+        volume_count: volume_count(Path::new(path)),
     }
+}
+
+fn volume_count(path: &Path) -> usize {
+    let Some(name) = path.file_name().and_then(|value| value.to_str()) else {
+        return 1;
+    };
+    let Some(prefix) = name.strip_suffix("001") else {
+        return 1;
+    };
+    let Some(parent) = path.parent() else {
+        return 1;
+    };
+    (2..=999)
+        .take_while(|number| parent.join(format!("{prefix}{number:03}")).is_file())
+        .count()
+        + 1
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -377,6 +399,9 @@ mod tests {
             total_bytes: 2,
             encrypted: false,
             skipped_links: 0,
+            comment: None,
+            can_modify: true,
+            volume_count: 1,
         };
         let page = EntryPage {
             folder: String::new(),
@@ -396,7 +421,10 @@ mod tests {
                 "entryCount": 1,
                 "totalBytes": 2,
                 "encrypted": false,
-                "skippedLinks": 0
+                "skippedLinks": 0,
+                "comment": null,
+                "canModify": true,
+                "volumeCount": 1
             })
         );
         assert_eq!(
@@ -420,6 +448,16 @@ mod tests {
                 "totalPages": 1
             })
         );
+    }
+
+    #[test]
+    fn counts_only_contiguous_archive_volumes() {
+        let root = tempfile::tempdir().unwrap();
+        for suffix in ["001", "002", "004"] {
+            fs::write(root.path().join(format!("split.7z.{suffix}")), suffix).unwrap();
+        }
+        assert_eq!(volume_count(&root.path().join("split.7z.001")), 2);
+        assert_eq!(volume_count(&root.path().join("single.7z")), 1);
     }
 
     #[test]

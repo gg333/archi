@@ -14,6 +14,7 @@ const MAX_LOG_BYTES: u64 = 256 * 1024;
 pub(crate) const MIN_EXPANDED_BYTES: u64 = 1024 * 1024;
 pub(crate) const MAX_EXPANDED_BYTES: u64 = 1024 * 1024 * 1024 * 1024;
 const DEFAULT_EXPANDED_BYTES: u64 = 10 * 1024 * 1024 * 1024;
+const MAX_RECENT_ARCHIVES: usize = 10;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -29,11 +30,17 @@ pub(crate) struct Settings {
     version: u32,
     default_format: ArchiveFormat,
     default_compression: CompressionLevel,
+    #[serde(default = "default_compression")]
+    zip_compression: CompressionLevel,
+    #[serde(default = "default_compression")]
+    seven_zip_compression: CompressionLevel,
     extraction_destination: ExtractionDestination,
     custom_destination: Option<String>,
     reveal_on_completion: bool,
     notifications: bool,
     show_hidden_entries: bool,
+    #[serde(default = "default_history_enabled")]
+    history_enabled: bool,
     #[serde(default = "default_expanded_bytes")]
     max_expanded_bytes: u64,
     max_concurrent_jobs: u8,
@@ -45,11 +52,14 @@ impl Default for Settings {
             version: SETTINGS_VERSION,
             default_format: ArchiveFormat::Zip,
             default_compression: CompressionLevel::Normal,
+            zip_compression: CompressionLevel::Normal,
+            seven_zip_compression: CompressionLevel::Normal,
             extraction_destination: ExtractionDestination::Ask,
             custom_destination: None,
             reveal_on_completion: true,
             notifications: false,
             show_hidden_entries: false,
+            history_enabled: true,
             max_expanded_bytes: default_expanded_bytes(),
             max_concurrent_jobs: 1,
         }
@@ -58,6 +68,14 @@ impl Default for Settings {
 
 const fn default_expanded_bytes() -> u64 {
     DEFAULT_EXPANDED_BYTES
+}
+
+const fn default_compression() -> CompressionLevel {
+    CompressionLevel::Normal
+}
+
+const fn default_history_enabled() -> bool {
+    true
 }
 
 #[derive(Clone)]
@@ -144,6 +162,9 @@ impl LocalData {
         validate(&settings)?;
         let _guard = self.0.lock.lock().map_err(lock_error)?;
         write_json(&self.0.directory, "settings.json", &settings)?;
+        if !settings.history_enabled {
+            remove_if_exists(&self.0.directory.join("recent-archives.json"))?;
+        }
         Ok(settings)
     }
 
@@ -151,10 +172,40 @@ impl LocalData {
         self.save(Settings::default())
     }
 
+    pub(crate) fn recent_archives(&self) -> Result<Vec<String>, ArchiveError> {
+        let _guard = self.0.lock.lock().map_err(lock_error)?;
+        read_recents(&self.0.directory)
+    }
+
+    pub(crate) fn record_recent(&self, path: &Path) -> Result<(), ArchiveError> {
+        if !self.load()?.history_enabled {
+            return Ok(());
+        }
+        let path = path.canonicalize().map_err(settings_error)?;
+        if !path.is_file() {
+            return Err(ArchiveError::new(
+                "settings_invalid",
+                "Only existing archive files can be added to recent history",
+            ));
+        }
+        let path = path.to_string_lossy().into_owned();
+        let _guard = self.0.lock.lock().map_err(lock_error)?;
+        let mut recents = read_recents(&self.0.directory)?;
+        recents.retain(|value| value != &path);
+        recents.insert(0, path);
+        recents.truncate(MAX_RECENT_ARCHIVES);
+        write_json(&self.0.directory, "recent-archives.json", &recents)
+    }
+
+    pub(crate) fn clear_recent_archives(&self) -> Result<(), ArchiveError> {
+        let _guard = self.0.lock.lock().map_err(lock_error)?;
+        remove_if_exists(&self.0.directory.join("recent-archives.json"))
+    }
+
     pub(crate) fn record(&self, event: &str, code: Option<&str>) -> Result<(), ArchiveError> {
         if !matches!(
             event,
-            "startup" | "open" | "create" | "extract" | "test" | "error"
+            "startup" | "open" | "create" | "extract" | "test" | "modify" | "error"
         ) || code.is_some_and(|value| {
             value.len() > 64
                 || !value
@@ -270,6 +321,42 @@ fn validate(settings: &Settings) -> Result<(), ArchiveError> {
         }
     }
     Ok(())
+}
+
+fn read_recents(directory: &Path) -> Result<Vec<String>, ArchiveError> {
+    let path = directory.join("recent-archives.json");
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    if fs::metadata(&path).map_err(settings_error)?.len() > 64 * 1024 {
+        return Err(ArchiveError::new(
+            "settings_invalid",
+            "Recent archive history is unexpectedly large",
+        ));
+    }
+    let recents: Vec<String> =
+        serde_json::from_reader(fs::File::open(&path).map_err(settings_error)?)
+            .map_err(settings_error)?;
+    if recents.len() > MAX_RECENT_ARCHIVES
+        || recents.iter().any(|value| !Path::new(value).is_absolute())
+    {
+        return Err(ArchiveError::new(
+            "settings_invalid",
+            "Recent archive history is invalid",
+        ));
+    }
+    Ok(recents
+        .into_iter()
+        .filter(|value| Path::new(value).is_file())
+        .collect())
+}
+
+fn remove_if_exists(path: &Path) -> Result<(), ArchiveError> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(settings_error(error)),
+    }
 }
 
 fn write_json<T: Serialize>(directory: &Path, name: &str, value: &T) -> Result<(), ArchiveError> {
@@ -404,6 +491,31 @@ mod tests {
     }
 
     #[test]
+    fn recent_archive_history_is_private_bounded_and_clearable() {
+        let directory = tempfile::tempdir().unwrap();
+        let data = data(directory.path().to_path_buf());
+        for index in 0..12 {
+            let archive = directory.path().join(format!("{index}.zip"));
+            fs::write(&archive, "fixture").unwrap();
+            data.record_recent(&archive).unwrap();
+        }
+        let recents = data.recent_archives().unwrap();
+        assert_eq!(recents.len(), MAX_RECENT_ARCHIVES);
+        assert!(recents[0].ends_with("11.zip"));
+        data.clear_recent_archives().unwrap();
+        assert!(data.recent_archives().unwrap().is_empty());
+
+        let disabled = Settings {
+            history_enabled: false,
+            ..Settings::default()
+        };
+        data.save(disabled).unwrap();
+        data.record_recent(&directory.path().join("11.zip"))
+            .unwrap();
+        assert!(data.recent_archives().unwrap().is_empty());
+    }
+
+    #[test]
     fn frontend_settings_contract_uses_camel_case_fields() {
         assert_eq!(
             serde_json::to_value(Settings::default()).unwrap(),
@@ -411,11 +523,14 @@ mod tests {
                 "version": 1,
                 "defaultFormat": "zip",
                 "defaultCompression": "normal",
+                "zipCompression": "normal",
+                "sevenZipCompression": "normal",
                 "extractionDestination": "ask",
                 "customDestination": null,
                 "revealOnCompletion": true,
                 "notifications": false,
                 "showHiddenEntries": false,
+                "historyEnabled": true,
                 "maxExpandedBytes": 10_737_418_240_u64,
                 "maxConcurrentJobs": 1
             })

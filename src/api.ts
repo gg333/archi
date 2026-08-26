@@ -46,15 +46,51 @@ export function createArchive(
   compression: CompressionLevel,
   password?: string,
   passwordConfirmation?: string,
+  volumeSize?: number,
 ): Promise<ArchiveDocument> {
   return invoke("create_archive", {
     inputs,
     output,
     format,
     compression,
+    volumeSize,
     password,
     passwordConfirmation,
   });
+}
+
+export function addToArchive(
+  path: string,
+  inputs: string[],
+  compression: CompressionLevel,
+  password?: string,
+): Promise<ArchiveDocument> {
+  return invoke("add_to_archive", { path, inputs, compression, password });
+}
+
+export function deleteArchiveEntries(
+  path: string,
+  entries: string[],
+  password?: string,
+): Promise<ArchiveDocument> {
+  return invoke("delete_archive_entries", { path, entries, password });
+}
+
+export function renameArchiveEntry(
+  path: string,
+  entry: string,
+  newName: string,
+  password?: string,
+): Promise<ArchiveDocument> {
+  return invoke("rename_archive_entry", { path, entry, newName, password });
+}
+
+export function setArchiveComment(
+  path: string,
+  comment: string,
+  password?: string,
+): Promise<ArchiveDocument> {
+  return invoke("set_archive_comment", { path, comment, password });
 }
 
 export function testArchive(path: string, password?: string): Promise<TestResult> {
@@ -105,6 +141,14 @@ export function saveSettings(settings: Settings): Promise<Settings> {
 
 export function resetSettings(): Promise<Settings> {
   return invoke("reset_settings");
+}
+
+export function recentArchives(): Promise<string[]> {
+  return invoke("recent_archives");
+}
+
+export function clearRecentArchives(): Promise<void> {
+  return invoke("clear_recent_archives");
 }
 
 export function recordDiagnostic(event: string, code?: string): Promise<void> {

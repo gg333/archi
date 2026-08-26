@@ -5,6 +5,7 @@ use std::{
     fs::{self, File, FileTimes, OpenOptions},
     io::{self, Write},
     path::{Path, PathBuf},
+    time::SystemTime,
 };
 use unicode_normalization::UnicodeNormalization;
 
@@ -32,6 +33,175 @@ pub(crate) struct StagingDirectory {
     _lock: File,
     _directory: tempfile::TempDir,
     payload: PathBuf,
+}
+
+pub(crate) struct ArchiveRewrite {
+    source: PathBuf,
+    temporary: PathBuf,
+    fingerprint: RewriteFingerprint,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct RewriteFingerprint {
+    len: u64,
+    modified: Option<SystemTime>,
+    #[cfg(unix)]
+    device: u64,
+    #[cfg(unix)]
+    inode: u64,
+    #[cfg(unix)]
+    changed_seconds: i64,
+    #[cfg(unix)]
+    changed_nanoseconds: i64,
+}
+
+impl ArchiveRewrite {
+    pub(crate) fn create(source: &Path) -> Result<Self, ArchiveError> {
+        let metadata = fs::symlink_metadata(source).map_err(path_io_error)?;
+        if !source.is_absolute() || !metadata.is_file() || metadata.file_type().is_symlink() {
+            return Err(ArchiveError::new(
+                "archive_not_writable",
+                "Only regular archive files can be modified",
+            ));
+        }
+        let parent = source.parent().ok_or_else(|| {
+            ArchiveError::new("archive_not_writable", "The archive has no parent folder")
+        })?;
+        let suffix = source
+            .extension()
+            .and_then(|value| value.to_str())
+            .map(|value| format!(".{value}"))
+            .unwrap_or_default();
+        let mut temporary = tempfile::Builder::new()
+            .prefix(".archive-app-rewrite-")
+            .suffix(&suffix)
+            .tempfile_in(parent)
+            .map_err(destination_error)?;
+        let mut input = File::open(source).map_err(path_io_error)?;
+        io::copy(&mut input, temporary.as_file_mut()).map_err(destination_error)?;
+        temporary
+            .as_file()
+            .set_permissions(metadata.permissions())
+            .map_err(destination_error)?;
+        temporary.as_file_mut().flush().map_err(destination_error)?;
+        temporary.as_file().sync_all().map_err(destination_error)?;
+        let (_, temporary) = temporary
+            .keep()
+            .map_err(|error| destination_error(error.error))?;
+        Ok(Self {
+            source: source.to_path_buf(),
+            temporary,
+            fingerprint: rewrite_fingerprint(&metadata),
+        })
+    }
+
+    pub(crate) fn path(&self) -> &Path {
+        &self.temporary
+    }
+
+    pub(crate) fn recovery_error(&self, error: ArchiveError) -> ArchiveError {
+        ArchiveError::new(
+            &error.code,
+            format!(
+                "{} The recoverable rewritten archive is at {}",
+                error.message,
+                self.temporary.display()
+            ),
+        )
+    }
+
+    pub(crate) fn commit(self) -> Result<(), ArchiveError> {
+        let current = fs::symlink_metadata(&self.source)
+            .map_err(|error| self.recovery_error(path_io_error(error)))?;
+        if rewrite_fingerprint(&current) != self.fingerprint {
+            return Err(self.recovery_error(ArchiveError::new(
+                "archive_changed",
+                "The source archive changed before replacement.",
+            )));
+        }
+        let parent = self.source.parent().ok_or_else(|| {
+            self.recovery_error(ArchiveError::new(
+                "archive_not_writable",
+                "The archive has no parent folder.",
+            ))
+        })?;
+        let backup = unique_internal_path(parent, ".archive-app-backup-")
+            .map_err(|error| self.recovery_error(error))?;
+        #[cfg(unix)]
+        let source_moved = match fs::hard_link(&self.source, &backup) {
+            Ok(()) => false,
+            Err(_) => {
+                fs::rename(&self.source, &backup).map_err(|error| {
+                    self.recovery_error(ArchiveError::new(
+                        "replacement_failed",
+                        format!("Could not preserve the original archive: {error}."),
+                    ))
+                })?;
+                true
+            }
+        };
+        #[cfg(not(unix))]
+        let source_moved = {
+            fs::rename(&self.source, &backup).map_err(|error| {
+                self.recovery_error(ArchiveError::new(
+                    "replacement_failed",
+                    format!("Could not preserve the original archive: {error}."),
+                ))
+            })?;
+            true
+        };
+        if let Err(error) = fs::rename(&self.temporary, &self.source) {
+            if source_moved {
+                let _ = fs::rename(&backup, &self.source);
+            } else {
+                let _ = fs::remove_file(&backup);
+            }
+            return Err(self.recovery_error(ArchiveError::new(
+                "replacement_failed",
+                format!("Could not install the rewritten archive: {error}."),
+            )));
+        }
+        if let Err(error) = File::open(&self.source)
+            .and_then(|file| file.sync_all())
+            .and_then(|()| sync_parent(parent))
+        {
+            let _ = fs::rename(&self.source, &self.temporary);
+            let _ = fs::rename(&backup, &self.source);
+            return Err(self.recovery_error(ArchiveError::new(
+                "replacement_failed",
+                format!("Could not make the archive replacement durable: {error}."),
+            )));
+        }
+        let _ = fs::remove_file(backup);
+        Ok(())
+    }
+}
+
+#[cfg(unix)]
+fn sync_parent(parent: &Path) -> io::Result<()> {
+    File::open(parent)?.sync_all()
+}
+
+#[cfg(not(unix))]
+fn sync_parent(_: &Path) -> io::Result<()> {
+    Ok(())
+}
+
+fn rewrite_fingerprint(metadata: &fs::Metadata) -> RewriteFingerprint {
+    #[cfg(unix)]
+    use std::os::unix::fs::MetadataExt;
+    RewriteFingerprint {
+        len: metadata.len(),
+        modified: metadata.modified().ok(),
+        #[cfg(unix)]
+        device: metadata.dev(),
+        #[cfg(unix)]
+        inode: metadata.ino(),
+        #[cfg(unix)]
+        changed_seconds: metadata.ctime(),
+        #[cfg(unix)]
+        changed_nanoseconds: metadata.ctime_nsec(),
+    }
 }
 
 impl StagingDirectory {
@@ -204,35 +374,108 @@ pub fn commit_staging(
 }
 
 pub fn install_created_archive(source: &Path, destination: &Path) -> Result<(), ArchiveError> {
-    let parent = destination.parent().ok_or_else(|| {
+    install_created_archives(&[source.to_path_buf()], source, destination).map(|_| ())
+}
+
+pub(crate) fn install_created_archives(
+    sources: &[PathBuf],
+    source_base: &Path,
+    destination_base: &Path,
+) -> Result<Vec<PathBuf>, ArchiveError> {
+    if sources.is_empty() {
+        return Err(ArchiveError::new(
+            "invalid_destination",
+            "The archive engine produced no output files",
+        ));
+    }
+    let parent = destination_base.parent().ok_or_else(|| {
         ArchiveError::new(
             "invalid_destination",
             "Archive output path had no parent folder",
         )
     })?;
-    if !source.is_file() || !parent.is_dir() {
+    if !parent.is_dir() {
         return Err(ArchiveError::new(
             "invalid_destination",
-            "Archive output or destination folder is unavailable",
+            "The archive destination folder is unavailable",
         ));
     }
-    if existing_equivalent(destination)?.is_some() {
-        return Err(ArchiveError::new(
-            "output_exists",
-            "An item already exists at the archive output path",
-        ));
+    let source_name = source_base
+        .file_name()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| {
+            ArchiveError::new(
+                "invalid_destination",
+                "Archive output name is not valid Unicode",
+            )
+        })?;
+    let destination_name = destination_base
+        .file_name()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| {
+            ArchiveError::new(
+                "invalid_destination",
+                "Archive output name is not valid Unicode",
+            )
+        })?;
+    let mut targets = Vec::with_capacity(sources.len());
+    for source in sources {
+        if !source.is_file() {
+            return Err(ArchiveError::new(
+                "invalid_destination",
+                "An archive output volume is unavailable",
+            ));
+        }
+        let name = source
+            .file_name()
+            .and_then(|value| value.to_str())
+            .ok_or_else(|| {
+                ArchiveError::new(
+                    "invalid_destination",
+                    "Archive volume name is not valid Unicode",
+                )
+            })?;
+        let suffix = name.strip_prefix(source_name).ok_or_else(|| {
+            ArchiveError::new(
+                "invalid_destination",
+                "Archive volume names are inconsistent",
+            )
+        })?;
+        let target = parent.join(format!("{destination_name}{suffix}"));
+        if existing_equivalent(&target)?.is_some() {
+            return Err(ArchiveError::new(
+                "output_exists",
+                format!("An item already exists at {}", target.display()),
+            ));
+        }
+        targets.push(target);
     }
-    let mut temporary = tempfile::Builder::new()
-        .prefix(".archive-app-create-")
-        .tempfile_in(parent)
-        .map_err(destination_error)?;
-    let mut input = File::open(source).map_err(path_io_error)?;
-    io::copy(&mut input, temporary.as_file_mut()).map_err(destination_error)?;
-    temporary.as_file_mut().flush().map_err(destination_error)?;
-    temporary
-        .persist_noclobber(destination)
-        .map_err(|error| destination_error(error.error))?;
-    Ok(())
+
+    let mut staged = Vec::with_capacity(sources.len());
+    for (source, target) in sources.iter().zip(&targets) {
+        let mut temporary = tempfile::Builder::new()
+            .prefix(".archive-app-create-")
+            .tempfile_in(parent)
+            .map_err(destination_error)?;
+        let mut input = File::open(source).map_err(path_io_error)?;
+        io::copy(&mut input, temporary.as_file_mut()).map_err(destination_error)?;
+        temporary.as_file_mut().flush().map_err(destination_error)?;
+        temporary.as_file().sync_all().map_err(destination_error)?;
+        staged.push((temporary, target));
+    }
+    let mut installed = Vec::with_capacity(staged.len());
+    for (temporary, target) in staged {
+        match temporary.persist_noclobber(target) {
+            Ok(_) => installed.push(target.to_path_buf()),
+            Err(error) => {
+                for path in &installed {
+                    let _ = fs::remove_file(path);
+                }
+                return Err(destination_error(error.error));
+            }
+        }
+    }
+    Ok(installed)
 }
 
 #[derive(Debug)]
@@ -885,5 +1128,25 @@ mod tests {
                 .is_none());
         }
         assert_eq!(index.directory_reads, 1);
+    }
+
+    #[test]
+    fn archive_rewrite_replaces_atomically_and_detects_external_changes() {
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("source.zip");
+        fs::write(&source, "original").unwrap();
+        let rewrite = ArchiveRewrite::create(&source).unwrap();
+        fs::write(rewrite.path(), "replacement").unwrap();
+        rewrite.commit().unwrap();
+        assert_eq!(fs::read_to_string(&source).unwrap(), "replacement");
+
+        let rewrite = ArchiveRewrite::create(&source).unwrap();
+        let recovery = rewrite.path().to_path_buf();
+        fs::write(rewrite.path(), "candidate").unwrap();
+        fs::write(&source, "external change").unwrap();
+        let error = rewrite.commit().unwrap_err();
+        assert_eq!(error.code, "archive_changed");
+        assert_eq!(fs::read_to_string(&source).unwrap(), "external change");
+        assert_eq!(fs::read_to_string(recovery).unwrap(), "candidate");
     }
 }

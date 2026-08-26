@@ -86,6 +86,7 @@ fn reports_encrypted_headers_and_damaged_archives_with_typed_errors() {
         &plan,
         ArchiveFormat::SevenZip,
         CompressionLevel::Normal,
+        None,
         Some("contract-password"),
     )
     .unwrap();
@@ -257,6 +258,7 @@ fn creates_mixed_zip_layout_compatible_with_system_unzip() {
         ArchiveFormat::Zip,
         CompressionLevel::Normal,
         None,
+        None,
     )
     .unwrap();
     test_archive(&engine, &output, None).unwrap();
@@ -305,6 +307,7 @@ fn creation_skips_symbolic_links_without_following_them() {
         ArchiveFormat::Zip,
         CompressionLevel::Normal,
         None,
+        None,
     )
     .unwrap();
     let paths = list_archive(&engine, &output, None)
@@ -335,6 +338,7 @@ fn creates_encrypted_zip_and_7z_with_typed_password_failures() {
             &plan,
             format,
             CompressionLevel::Normal,
+            None,
             Some("private-password"),
         )
         .unwrap();
@@ -376,6 +380,7 @@ fn benchmarks_creation_listing_testing_and_extraction() {
         &plan,
         ArchiveFormat::Zip,
         CompressionLevel::Normal,
+        None,
         None,
     )
     .unwrap();
