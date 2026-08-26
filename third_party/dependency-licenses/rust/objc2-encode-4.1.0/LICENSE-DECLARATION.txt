@@ -1,0 +1,3 @@
+objc2-encode 4.1.0
+License declared by package manifest: MIT
+Source: https://github.com/madsmtm/objc2

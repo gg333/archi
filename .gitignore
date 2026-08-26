@@ -13,6 +13,18 @@ dist
 dist-ssr
 *.local
 
+# Environment and release credentials
+.env
+.env.*
+!.env.example
+*.p8
+*.p12
+*.pem
+*.key
+*.cer
+*.certSigningRequest
+*.mobileprovision
+
 # Private planning documents (kept out of the public repository)
 private/
 

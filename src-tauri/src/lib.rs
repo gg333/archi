@@ -164,13 +164,97 @@ mod macos_services {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    use tauri::Manager;
+    use tauri::{
+        menu::{Menu, MenuItem, MenuItemKind, PredefinedMenuItem, HELP_SUBMENU_ID},
+        Emitter, Manager,
+    };
+
+    const ABOUT_MENU_ID: &str = "about-archi";
+    const NEW_ARCHIVE_MENU_ID: &str = "new-archive";
+    const OPEN_ARCHIVE_MENU_ID: &str = "open-archive";
+    const SETTINGS_MENU_ID: &str = "settings";
 
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
         .manage(jobs::JobManager::default())
         .manage(browser::ArchiveStore::default())
+        .menu(|app| {
+            let menu = Menu::default(app)?;
+
+            #[cfg(target_os = "macos")]
+            if let Some(MenuItemKind::Submenu(app_menu)) = menu.items()?.into_iter().next() {
+                app_menu.remove_at(0)?;
+                app_menu.remove_at(0)?;
+            }
+
+            if let Some(MenuItemKind::Submenu(help_menu)) = menu.get(HELP_SUBMENU_ID) {
+                #[cfg(not(target_os = "macos"))]
+                help_menu.remove_at(0)?;
+                help_menu.append(&MenuItem::with_id(
+                    app,
+                    ABOUT_MENU_ID,
+                    "About Archi",
+                    true,
+                    None::<&str>,
+                )?)?;
+            }
+
+            for item in menu.items()? {
+                if let MenuItemKind::Submenu(file_menu) = item {
+                    if file_menu.text()? == "File" {
+                        let new_archive = MenuItem::with_id(
+                            app,
+                            NEW_ARCHIVE_MENU_ID,
+                            "New Archive…",
+                            true,
+                            Some("CmdOrCtrl+N"),
+                        )?;
+                        let open_archive = MenuItem::with_id(
+                            app,
+                            OPEN_ARCHIVE_MENU_ID,
+                            "Open Archive…",
+                            true,
+                            Some("CmdOrCtrl+O"),
+                        )?;
+                        let settings = MenuItem::with_id(
+                            app,
+                            SETTINGS_MENU_ID,
+                            "Settings…",
+                            true,
+                            Some("CmdOrCtrl+,"),
+                        )?;
+                        let first_separator = PredefinedMenuItem::separator(app)?;
+                        let second_separator = PredefinedMenuItem::separator(app)?;
+                        file_menu.insert_items(
+                            &[
+                                &new_archive,
+                                &open_archive,
+                                &first_separator,
+                                &settings,
+                                &second_separator,
+                            ],
+                            0,
+                        )?;
+                        break;
+                    }
+                }
+            }
+
+            Ok(menu)
+        })
+        .on_menu_event(|app, event| {
+            let action = match event.id().as_ref() {
+                ABOUT_MENU_ID => Some("about"),
+                NEW_ARCHIVE_MENU_ID => Some("new-archive"),
+                OPEN_ARCHIVE_MENU_ID => Some("open-archive"),
+                SETTINGS_MENU_ID => Some("settings"),
+                _ => None,
+            };
+            if let Some(action) = action {
+                let _ = app.emit("menu-action", action);
+            }
+        })
         .setup(|app| {
             app.manage(settings::LocalData::initialize(app.handle())?);
             let shell_requests = shell_requests::ShellRequestStore::initialize(app.handle())?;

@@ -42,6 +42,11 @@
     "externalBin": [
       "binaries/7zz"
     ],
+    "resources": {
+      "../THIRD_PARTY_NOTICES.md": "THIRD_PARTY_NOTICES.md",
+      "../third_party/7zip": "third_party/7zip",
+      "../third_party/dependency-licenses": "third_party/dependency-licenses"
+    },
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -50,7 +55,10 @@
       "icons/icon.ico"
     ],
     "macOS": {
-      "minimumSystemVersion": "13.0"
+      "minimumSystemVersion": "13.0",
+      "hardenedRuntime": true,
+      "entitlements": "Entitlements.plist",
+      "signingIdentity": "-"
     }
   }
 }

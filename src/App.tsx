@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { getVersion } from "@tauri-apps/api/app";
+import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { confirm, open, save } from "@tauri-apps/plugin-dialog";
@@ -17,6 +19,7 @@ import type {
 } from "./types";
 import "./App.css";
 import { Modal } from "./components/Modal";
+import appIcon from "../src-tauri/icons/128x128@2x.png";
 
 const PAGE_SIZE = 200;
 const archiveFilters = [
@@ -101,6 +104,8 @@ function App() {
   const [renameDialog, setRenameDialog] = useState<RenameDialog | null>(null);
   const [commentOpen, setCommentOpen] = useState(false);
   const [commentDraft, setCommentDraft] = useState("");
+  const [aboutOpen, setAboutOpen] = useState(false);
+  const [appVersion, setAppVersion] = useState<string | null>(null);
   const searchRef = useRef<HTMLInputElement>(null);
   const shellBusy = useRef(false);
   const requestedIcons = useRef(new Set<string>());
@@ -112,6 +117,7 @@ function App() {
   const selectedSize = selectedEntries.reduce((total, entry) => total + (entry.size ?? 0), 0);
 
   useEffect(() => {
+    void getVersion().then(setAppVersion).catch(() => undefined);
     void getSettings().then((value) => {
       setSettings(value);
       setSettingsDraft(value);
@@ -121,6 +127,20 @@ function App() {
     }).catch((caught) => setError(archiveError(caught)));
     void refreshRecents();
   }, []);
+
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    void listen<string>("menu-action", ({ payload }) => {
+      if (payload === "about") setAboutOpen(true);
+      else if (!busy && payload === "new-archive") openCreateDialog();
+      else if (!busy && payload === "open-archive") void chooseArchive();
+      else if (!busy && payload === "settings") openSettings();
+    }).then((remove) => {
+      if (disposed) remove(); else unlisten = remove;
+    });
+    return () => { disposed = true; unlisten?.(); };
+  }, [busy, settings]);
 
   useEffect(() => {
     void getCurrentWindow().setTitle(archive ? `${archive.name} — Archi` : "Archi");
@@ -228,6 +248,7 @@ function App() {
       const modifier = event.metaKey || event.ctrlKey;
       if (event.key === "Escape") {
         if (entryMenu) setEntryMenu(null);
+        else if (aboutOpen) setAboutOpen(false);
         else if (propertiesEntry) setPropertiesEntry(null);
         else if (renameDialog) setRenameDialog(null);
         else if (commentOpen) setCommentOpen(false);
@@ -238,7 +259,7 @@ function App() {
         else if (job?.cancellable) void requestCancellation();
         return;
       }
-      if (!modifier || passwordAction || createOpen || settingsOpen || extractDialog || renameDialog || commentOpen) return;
+      if (!modifier || aboutOpen || passwordAction || createOpen || settingsOpen || extractDialog || renameDialog || commentOpen) return;
       const key = event.key.toLowerCase();
       if (key === "o") { event.preventDefault(); void chooseArchive(); }
       else if (key === "n") { event.preventDefault(); openCreateDialog(); }
@@ -255,7 +276,7 @@ function App() {
     };
     window.addEventListener("keydown", shortcut);
     return () => window.removeEventListener("keydown", shortcut);
-  }, [archive, commentOpen, createOpen, entries, entryMenu, extractDialog, job, passwordAction, propertiesEntry, renameDialog, selected, selectedEntries, settingsOpen]);
+  }, [aboutOpen, archive, commentOpen, createOpen, entries, entryMenu, extractDialog, job, passwordAction, propertiesEntry, renameDialog, selected, selectedEntries, settingsOpen]);
 
   async function chooseArchive() {
     const path = await open({ multiple: false, directory: false, title: "Open Archive", filters: [{ name: "Archives", extensions: archiveFilters }] });
@@ -770,6 +791,7 @@ function App() {
       </section> : <section className="empty-state"><div className="empty-icon" aria-hidden="true">▦</div><h2>Open or create an archive</h2><p>Browse and create ZIP or 7z archives locally without uploading anything. You can also drop files here.</p><div className="header-actions"><button onClick={openCreateDialog} disabled={busy}>New Archive…</button><button onClick={chooseArchive} disabled={busy}>Choose Archive…</button></div>{settings.historyEnabled && recents.length > 0 && <div className="recent-list"><strong>Recent archives</strong>{recents.map((path) => <button key={path} onClick={() => void loadArchive(path)} title={path}><span>{leafName(path)}</span><small>{parentPath(path)}</small></button>)}</div>}<span role="status">{status}</span></section>}
 
       {entryMenu && <div className="context-menu" role="menu" style={{ left: entryMenu.x, top: entryMenu.y }} onClick={(event) => event.stopPropagation()}>{entryMenu.entry.isDirectory && <button role="menuitem" onClick={() => { const path = entryMenu.entry.path; setEntryMenu(null); navigateFolder(path); }}>Open Folder</button>}<button role="menuitem" onClick={() => { const path = entryMenu.entry.path; setEntryMenu(null); void requestExtraction([path]); }}>Extract {entryMenu.entry.isDirectory ? "Folder" : "File"}…</button>{archive?.canModify && <><button role="menuitem" onClick={() => { const entry = entryMenu.entry; setEntryMenu(null); requestRename(entry); }}>Rename…</button><button className="danger-button" role="menuitem" onClick={() => { const path = entryMenu.entry.path; setEntryMenu(null); void requestDelete([path]); }}>Delete</button></>}<button role="menuitem" onClick={() => { const path = entryMenu.entry.path; setEntryMenu(null); void copyPaths([path]); }}>Copy Path</button><button role="menuitem" onClick={() => { setPropertiesEntry(entryMenu.entry); setEntryMenu(null); }}>Properties</button></div>}
+      {aboutOpen && <Modal className="about-dialog" labelledBy="about-title" onClose={() => setAboutOpen(false)}><div className="about-heading"><img src={appIcon} alt="" /><div><h2 id="about-title">Archi</h2><p>Version {appVersion ?? "0.2.0"}</p></div></div><p>Fast, private archive management for macOS.</p><dl><dt>Archive engine</dt><dd>7-Zip 26.02</dd></dl><p className="about-legal">7-Zip is licensed separately under the GNU LGPL with the unRAR restriction. Full notices and corresponding source are included with Archi.</p><p>© 2026 Nitivar</p><div className="modal-actions"><button autoFocus onClick={() => setAboutOpen(false)}>Close</button></div></Modal>}
       {propertiesEntry && <PropertiesDialog entry={propertiesEntry} onClose={() => setPropertiesEntry(null)} />}
       {renameDialog && <Modal className="password-dialog" labelledBy="rename-title" onClose={() => setRenameDialog(null)}><form className="modal-form" onSubmit={submitRename}><h2 id="rename-title">Rename archive entry</h2><p>{renameDialog.entry.path}</p><label>New name<input autoFocus value={renameDialog.name} onChange={(event) => setRenameDialog({ ...renameDialog, name: event.target.value })} /></label><div className="modal-actions"><button type="button" onClick={() => setRenameDialog(null)}>Cancel</button><button className="primary-button" type="submit">Rename</button></div></form></Modal>}
       {commentOpen && <Modal className="comment-dialog" labelledBy="comment-title" onClose={() => setCommentOpen(false)}><form className="modal-form" onSubmit={submitComment}><h2 id="comment-title">ZIP archive comment</h2><label>Comment<textarea autoFocus rows={6} maxLength={65535} value={commentDraft} onChange={(event) => setCommentDraft(event.target.value)} /></label><p>{new TextEncoder().encode(commentDraft).length.toLocaleString()} of 65,535 UTF-8 bytes</p><div className="modal-actions"><button type="button" onClick={() => setCommentOpen(false)}>Cancel</button><button className="primary-button" type="submit">Save Comment</button></div></form></Modal>}

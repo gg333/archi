@@ -1,0 +1,3 @@
+alloc-stdlib 0.2.4
+License declared by package manifest: BSD-3-Clause
+Source: https://github.com/dropbox/rust-alloc-no-stdlib

@@ -336,6 +336,15 @@ progress { width: 100%; height: 8px; accent-color: #2f6fed; }
 .settings-dialog fieldset p { color: #667085; font-size: 12px; line-height: 1.5; }
 .modal-spacer { flex: 1; }
 .danger-button { color: #9f1d2d; border-color: #f2b8c0; }
+.about-dialog { width: min(440px, 100%); height: fit-content; }
+.about-heading { display: flex; align-items: center; gap: 16px; }
+.about-heading img { width: 80px; height: 80px; border-radius: 18px; }
+.about-heading h2 { font-size: 24px; }
+.about-heading p { margin-top: 3px; }
+.about-dialog dl { display: grid; grid-template-columns: 110px minmax(0, 1fr); gap: 8px 12px; margin: 0; font-size: 13px; }
+.about-dialog dt { color: #667085; font-weight: 600; }
+.about-dialog dd { margin: 0; }
+.about-dialog .about-legal { font-size: 12px; line-height: 1.5; }
 .properties-dialog { width: min(480px, 100%); }
 .properties-dialog dl { display: grid; grid-template-columns: 110px minmax(0, 1fr); gap: 9px 14px; margin: 0; }
 .properties-dialog dt { color: #667085; font-weight: 600; }

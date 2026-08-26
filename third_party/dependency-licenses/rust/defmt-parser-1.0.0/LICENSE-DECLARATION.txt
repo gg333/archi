@@ -1,0 +1,3 @@
+defmt-parser 1.0.0
+License declared by package manifest: MIT OR Apache-2.0
+Source: https://github.com/knurling-rs/defmt
