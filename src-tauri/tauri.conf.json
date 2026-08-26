@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Archive App",
+  "productName": "Archi",
   "version": "0.2.0",
-  "identifier": "com.nitivar.archiver",
+  "identifier": "com.nitivar.archi",
   "build": {
     "beforeDevCommand": "pnpm dev",
     "devUrl": "http://localhost:1420",
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "Archive App",
+        "title": "Archi",
         "width": 980,
         "height": 680,
         "minWidth": 720,

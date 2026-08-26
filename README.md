@@ -1,4 +1,4 @@
-# Archive App
+# Archi
 
 A local-first archive manager built with Tauri 2, React, TypeScript, Rust, and a bundled 7-Zip 26.02 engine.
 
@@ -12,7 +12,7 @@ pnpm tauri dev
 Run the release bundle after `pnpm tauri build --bundles app`:
 
 ```bash
-open "src-tauri/target/release/bundle/macos/Archive App.app"
+open "src-tauri/target/release/bundle/macos/Archi.app"
 ```
 
 Validation:
@@ -24,4 +24,4 @@ cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --all-features -
 cargo test --manifest-path src-tauri/Cargo.toml
 ```
 
-The current app is installed at `/Applications/Archive App.app`, ad-hoc signed, and not notarized. Final branding, update/uninstall validation, Developer ID signing, and notarization remain revised Sprint 8 work before production release.
+The current development app is installed at `/Applications/Archi.app`, ad-hoc signed, and not notarized. Developer ID signing, notarization, and clean-machine update/uninstall validation remain before production release.

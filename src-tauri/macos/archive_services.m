@@ -22,7 +22,7 @@ extern void archive_app_receive_service_paths(const char *action, const char *pa
 
   if (urls.count == 0) {
     if (error != NULL) {
-      *error = @"Archive App did not receive any file URLs.";
+      *error = @"Archi did not receive any file URLs.";
     }
     return;
   }
@@ -36,7 +36,7 @@ extern void archive_app_receive_service_paths(const char *action, const char *pa
 
   if (paths.count == 0) {
     if (error != NULL) {
-      *error = @"Archive App did not receive any valid file URLs.";
+      *error = @"Archi did not receive any valid file URLs.";
     }
     return;
   }
