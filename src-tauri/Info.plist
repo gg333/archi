@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- The working Services port is coupled to CFBundleExecutable (archive-app).
+       Re-test every Finder Service if the executable or product is renamed. -->
+  <key>NSServices</key>
+  <array>
+    <dict>
+      <key>NSMenuItem</key>
+      <dict>
+        <key>default</key><string>Extract Here with Archive App</string>
+      </dict>
+      <key>NSMessage</key>
+      <string>archiveExtractHere</string>
+      <key>NSPortName</key>
+      <string>archive-app</string>
+      <key>NSSendFileTypes</key>
+      <array>
+        <string>public.archive</string>
+      </array>
+      <key>NSSendTypes</key>
+      <array>
+        <string>public.file-url</string>
+      </array>
+      <key>NSRequiredContext</key>
+      <dict/>
+      <key>NSUserData</key>
+      <string>extract_here</string>
+    </dict>
+    <dict>
+      <key>NSMenuItem</key>
+      <dict><key>default</key><string>Extract to Folder… with Archive App</string></dict>
+      <key>NSMessage</key><string>archiveExtractToFolder</string>
+      <key>NSPortName</key><string>archive-app</string>
+      <key>NSSendFileTypes</key><array><string>public.archive</string></array>
+      <key>NSSendTypes</key><array><string>public.file-url</string></array>
+      <key>NSRequiredContext</key><dict/>
+      <key>NSUserData</key><string>extract_to_folder</string>
+    </dict>
+    <dict>
+      <key>NSMenuItem</key>
+      <dict><key>default</key><string>Test with Archive App</string></dict>
+      <key>NSMessage</key><string>archiveTest</string>
+      <key>NSPortName</key><string>archive-app</string>
+      <key>NSSendFileTypes</key><array><string>public.archive</string></array>
+      <key>NSSendTypes</key><array><string>public.file-url</string></array>
+      <key>NSRequiredContext</key><dict/>
+      <key>NSUserData</key><string>test_archive</string>
+    </dict>
+    <dict>
+      <key>NSMenuItem</key>
+      <dict><key>default</key><string>Compress to ZIP with Archive App</string></dict>
+      <key>NSMessage</key><string>archiveCompressZip</string>
+      <key>NSPortName</key><string>archive-app</string>
+      <key>NSSendFileTypes</key><array><string>public.item</string></array>
+      <key>NSSendTypes</key><array><string>public.file-url</string></array>
+      <key>NSRequiredContext</key><dict/>
+      <key>NSUserData</key><string>compress_zip</string>
+    </dict>
+    <dict>
+      <key>NSMenuItem</key>
+      <dict><key>default</key><string>Compress with Options… in Archive App</string></dict>
+      <key>NSMessage</key><string>archiveCompressOptions</string>
+      <key>NSPortName</key><string>archive-app</string>
+      <key>NSSendFileTypes</key><array><string>public.item</string></array>
+      <key>NSSendTypes</key><array><string>public.file-url</string></array>
+      <key>NSRequiredContext</key><dict/>
+      <key>NSUserData</key><string>compress_options</string>
+    </dict>
+  </array>
+</dict>
+</plist>

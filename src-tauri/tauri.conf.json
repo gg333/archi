@@ -1,0 +1,56 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Archive App",
+  "version": "0.1.1",
+  "identifier": "com.nitivar.archiver",
+  "build": {
+    "beforeDevCommand": "pnpm dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "pnpm build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "Archive App",
+        "width": 980,
+        "height": 680,
+        "minWidth": 720,
+        "minHeight": 480
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; connect-src ipc: http://ipc.localhost; img-src 'self' data:; style-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'none'; frame-src 'none'"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "category": "Utility",
+    "fileAssociations": [
+      {
+        "ext": [
+          "zip", "7z", "rar", "tar", "gz", "tgz", "bz2", "tbz2", "xz",
+          "txz", "zst", "cab", "iso", "lzh", "lha", "ar", "cpio"
+        ],
+        "contentTypes": ["public.archive"],
+        "name": "Archive",
+        "role": "Viewer",
+        "rank": "Default"
+      }
+    ],
+    "externalBin": [
+      "binaries/7zz"
+    ],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "macOS": {
+      "minimumSystemVersion": "13.0"
+    }
+  }
+}

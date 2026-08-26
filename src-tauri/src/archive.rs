@@ -1,0 +1,1052 @@
+use serde::{Deserialize, Serialize};
+use std::{
+    ffi::OsString,
+    fmt, fs,
+    io::Write,
+    path::{Path, PathBuf},
+    process::{Child, Command, ExitStatus, Output, Stdio},
+};
+
+pub const PINNED_ENGINE_VERSION: &str = "26.02";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ArchiveFormat {
+    Zip,
+    SevenZip,
+}
+
+impl ArchiveFormat {
+    fn switch(self) -> &'static str {
+        match self {
+            Self::Zip => "-tzip",
+            Self::SevenZip => "-t7z",
+        }
+    }
+
+    pub(crate) fn validate_output(self, output: &Path) -> Result<(), ArchiveError> {
+        let expected = match self {
+            Self::Zip => "zip",
+            Self::SevenZip => "7z",
+        };
+        if output
+            .extension()
+            .and_then(|value| value.to_str())
+            .is_some_and(|value| value.eq_ignore_ascii_case(expected))
+        {
+            Ok(())
+        } else {
+            Err(ArchiveError::new(
+                "extension_mismatch",
+                format!("The selected format requires a .{expected} output file"),
+            ))
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum CompressionLevel {
+    Store,
+    Fast,
+    Normal,
+    Maximum,
+}
+
+impl CompressionLevel {
+    fn switch(self) -> &'static str {
+        match self {
+            Self::Store => "-mx=0",
+            Self::Fast => "-mx=3",
+            Self::Normal => "-mx=5",
+            Self::Maximum => "-mx=9",
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct CreationPlan {
+    pub root: PathBuf,
+    pub total_bytes: u64,
+    pub skipped_links: usize,
+    listfile: tempfile::NamedTempFile,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ArchiveEntry {
+    pub path: String,
+    pub is_directory: bool,
+    pub size: Option<u64>,
+    pub packed_size: Option<u64>,
+    pub modified: Option<String>,
+    pub encrypted: bool,
+    pub method: Option<String>,
+    pub is_link: bool,
+    pub link_target: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ArchiveError {
+    pub code: String,
+    pub message: String,
+}
+
+impl ArchiveError {
+    pub(crate) fn new(code: &str, message: impl Into<String>) -> Self {
+        Self {
+            code: code.to_string(),
+            message: message.into(),
+        }
+    }
+}
+
+impl fmt::Display for ArchiveError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for ArchiveError {}
+
+pub fn bundled_engine() -> Result<PathBuf, ArchiveError> {
+    let executable_name = if cfg!(windows) { "7zz.exe" } else { "7zz" };
+
+    if let Ok(current_executable) = std::env::current_exe() {
+        if let Some(directory) = current_executable.parent() {
+            let bundled = directory.join(executable_name);
+            if bundled.is_file() {
+                return Ok(bundled);
+            }
+        }
+    }
+
+    let development = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("binaries")
+        .join(format!("7zz-{}", target_triple()?));
+    if development.is_file() {
+        Ok(development)
+    } else {
+        Err(ArchiveError::new(
+            "engine_missing",
+            format!(
+                "The bundled 7-Zip engine was not found at {}",
+                development.display()
+            ),
+        ))
+    }
+}
+
+pub fn engine_version(binary: &Path) -> Result<String, ArchiveError> {
+    let output = run(binary, &[], None, None)?;
+    let text = String::from_utf8_lossy(&output.stdout);
+    let version = text
+        .lines()
+        .find(|line| line.starts_with("7-Zip"))
+        .map(str::to_owned)
+        .ok_or_else(|| {
+            ArchiveError::new("engine_protocol", "The 7-Zip version banner was not found")
+        })?;
+
+    if version.contains(PINNED_ENGINE_VERSION) {
+        Ok(version)
+    } else {
+        Err(ArchiveError::new(
+            "engine_version_mismatch",
+            format!("Expected 7-Zip {PINNED_ENGINE_VERSION}, but found {version}"),
+        ))
+    }
+}
+
+pub fn list_archive(
+    binary: &Path,
+    archive: &Path,
+    password: Option<&str>,
+) -> Result<Vec<ArchiveEntry>, ArchiveError> {
+    require_file(archive)?;
+    let mut args = vec![
+        "l".into(),
+        "-slt".into(),
+        "-ba".into(),
+        "-sccUTF-8".into(),
+        "--".into(),
+    ];
+    args.push(archive.as_os_str().to_owned());
+    let output = run(binary, &args, password, None)?;
+    parse_slt(
+        &String::from_utf8_lossy(&output.stdout),
+        fallback_entry_name(archive).as_deref(),
+    )
+}
+
+pub fn prepare_creation(inputs: &[PathBuf], output: &Path) -> Result<CreationPlan, ArchiveError> {
+    if inputs.is_empty() {
+        return Err(ArchiveError::new(
+            "no_inputs",
+            "Choose at least one file or folder to archive",
+        ));
+    }
+    if !output.is_absolute() || output.file_name().is_none() {
+        return Err(ArchiveError::new(
+            "invalid_destination",
+            "The archive output path must be an absolute file path",
+        ));
+    }
+    match fs::symlink_metadata(output) {
+        Ok(_) => {
+            return Err(ArchiveError::new(
+                "output_exists",
+                "An item already exists at the archive output path",
+            ));
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(ArchiveError::new(
+                "invalid_destination",
+                format!("Could not inspect the archive output path: {error}"),
+            ));
+        }
+    }
+    let output_parent = output
+        .parent()
+        .ok_or_else(|| ArchiveError::new("invalid_destination", "Output path has no folder"))?
+        .canonicalize()
+        .map_err(|error| {
+            ArchiveError::new(
+                "invalid_destination",
+                format!("Could not resolve the output folder: {error}"),
+            )
+        })?;
+    if !output_parent.is_dir() {
+        return Err(ArchiveError::new(
+            "invalid_destination",
+            "The archive output folder does not exist",
+        ));
+    }
+
+    let mut canonical = Vec::with_capacity(inputs.len());
+    let mut skipped_links = 0;
+    for input in inputs {
+        if !input.is_absolute() {
+            return Err(ArchiveError::new(
+                "invalid_source",
+                "Archive inputs must use absolute paths",
+            ));
+        }
+        let metadata = fs::symlink_metadata(input).map_err(|error| {
+            ArchiveError::new(
+                "invalid_source",
+                format!("Could not inspect {}: {error}", input.display()),
+            )
+        })?;
+        if metadata.file_type().is_symlink() {
+            skipped_links += 1;
+            continue;
+        }
+        let path = input.canonicalize().map_err(|error| {
+            ArchiveError::new(
+                "invalid_source",
+                format!("Could not resolve {}: {error}", input.display()),
+            )
+        })?;
+        if path == output_parent.join(output.file_name().unwrap()) {
+            return Err(ArchiveError::new(
+                "source_overlap",
+                "The output archive cannot replace an input file",
+            ));
+        }
+        canonical.push(path);
+    }
+    if canonical.is_empty() {
+        return Err(ArchiveError::new(
+            "no_safe_inputs",
+            "Every selected input was a symbolic link",
+        ));
+    }
+    ensure_same_filesystem(&canonical)?;
+    canonical.sort();
+    canonical.dedup();
+
+    let mut selected = Vec::<PathBuf>::new();
+    for path in canonical {
+        if selected
+            .iter()
+            .any(|parent| parent.is_dir() && path.starts_with(parent))
+        {
+            continue;
+        }
+        selected.push(path);
+    }
+    let mut root = selected[0]
+        .parent()
+        .ok_or_else(|| ArchiveError::new("invalid_source", "Archive input has no parent"))?
+        .to_path_buf();
+    for path in &selected[1..] {
+        let parent = path
+            .parent()
+            .ok_or_else(|| ArchiveError::new("invalid_source", "Archive input has no parent"))?;
+        while !parent.starts_with(&root) {
+            if !root.pop() {
+                return Err(ArchiveError::new(
+                    "ambiguous_roots",
+                    "Archive inputs do not share a filesystem root",
+                ));
+            }
+        }
+    }
+    if !root.has_root() {
+        return Err(ArchiveError::new(
+            "ambiguous_roots",
+            "Archive inputs do not share a filesystem root",
+        ));
+    }
+
+    let mut names = Vec::new();
+    let mut total_bytes = 0u64;
+    for path in selected {
+        collect_creation_entries(
+            &path,
+            &root,
+            &mut names,
+            &mut total_bytes,
+            &mut skipped_links,
+        )?;
+    }
+    let mut listfile = tempfile::NamedTempFile::new().map_err(|error| {
+        ArchiveError::new(
+            "staging_failed",
+            format!("Could not create an archive input list: {error}"),
+        )
+    })?;
+    for name in &names {
+        writeln!(listfile, "{}", name.to_string_lossy()).map_err(|error| {
+            ArchiveError::new(
+                "staging_failed",
+                format!("Could not write the archive input list: {error}"),
+            )
+        })?;
+    }
+    listfile.flush().map_err(|error| {
+        ArchiveError::new(
+            "staging_failed",
+            format!("Could not finish the archive input list: {error}"),
+        )
+    })?;
+
+    Ok(CreationPlan {
+        root,
+        total_bytes,
+        skipped_links,
+        listfile,
+    })
+}
+
+pub fn create_archive(
+    binary: &Path,
+    archive: &Path,
+    plan: &CreationPlan,
+    format: ArchiveFormat,
+    compression: CompressionLevel,
+    password: Option<&str>,
+) -> Result<Output, ArchiveError> {
+    run(
+        binary,
+        &create_args(archive, plan, format, compression, password),
+        password,
+        Some(&plan.root),
+    )
+}
+
+pub(crate) fn spawn_create(
+    binary: &Path,
+    archive: &Path,
+    plan: &CreationPlan,
+    format: ArchiveFormat,
+    compression: CompressionLevel,
+    password: Option<&str>,
+    output: (Stdio, Stdio),
+) -> Result<Child, ArchiveError> {
+    spawn_command(
+        binary,
+        &create_args(archive, plan, format, compression, password),
+        password,
+        Some(&plan.root),
+        output.0,
+        output.1,
+    )
+}
+
+pub fn extract_archive(
+    binary: &Path,
+    archive: &Path,
+    destination: &Path,
+    password: Option<&str>,
+) -> Result<Output, ArchiveError> {
+    extract_entries(binary, archive, destination, &[], password)
+}
+
+pub fn extract_entries(
+    binary: &Path,
+    archive: &Path,
+    destination: &Path,
+    entries: &[String],
+    password: Option<&str>,
+) -> Result<Output, ArchiveError> {
+    require_file(archive)?;
+    if destination.exists() && !destination.is_dir() {
+        return Err(ArchiveError::new(
+            "invalid_destination",
+            "The extraction destination is not a folder",
+        ));
+    }
+    std::fs::create_dir_all(destination).map_err(|error| {
+        ArchiveError::new(
+            "invalid_destination",
+            format!("Could not create the extraction folder: {error}"),
+        )
+    })?;
+
+    let args = extract_args(archive, destination, entries);
+    run(binary, &args, password, None)
+}
+
+pub(crate) fn spawn_extract_entries(
+    binary: &Path,
+    archive: &Path,
+    destination: &Path,
+    entries: &[String],
+    password: Option<&str>,
+    stdout: Stdio,
+    stderr: Stdio,
+) -> Result<Child, ArchiveError> {
+    require_file(archive)?;
+    std::fs::create_dir_all(destination).map_err(|error| {
+        ArchiveError::new(
+            "staging_failed",
+            format!("Could not create the extraction staging folder: {error}"),
+        )
+    })?;
+    spawn_command(
+        binary,
+        &extract_args(archive, destination, entries),
+        password,
+        None,
+        stdout,
+        stderr,
+    )
+}
+
+pub(crate) fn engine_failure(status: &ExitStatus, stdout: &str, stderr: &str) -> ArchiveError {
+    classify_failure_parts(status, stdout.trim(), stderr.trim())
+}
+
+pub fn test_archive(
+    binary: &Path,
+    archive: &Path,
+    password: Option<&str>,
+) -> Result<Output, ArchiveError> {
+    require_file(archive)?;
+    let mut args = vec!["t".into(), "-bsp1".into(), "-bb1".into(), "--".into()];
+    args.push(archive.as_os_str().to_owned());
+    run(binary, &args, password, None)
+}
+
+pub(crate) fn spawn_test(
+    binary: &Path,
+    archive: &Path,
+    password: Option<&str>,
+    stdout: Stdio,
+    stderr: Stdio,
+) -> Result<Child, ArchiveError> {
+    require_file(archive)?;
+    let args = [
+        "t".into(),
+        "-bsp1".into(),
+        "-bb1".into(),
+        "--".into(),
+        archive.as_os_str().to_owned(),
+    ];
+    spawn_command(binary, &args, password, None, stdout, stderr)
+}
+
+fn target_triple() -> Result<&'static str, ArchiveError> {
+    match (std::env::consts::ARCH, std::env::consts::OS) {
+        ("aarch64", "macos") => Ok("aarch64-apple-darwin"),
+        ("x86_64", "macos") => Ok("x86_64-apple-darwin"),
+        ("x86_64", "windows") => Ok("x86_64-pc-windows-msvc.exe"),
+        ("x86_64", "linux") => Ok("x86_64-unknown-linux-gnu"),
+        (architecture, operating_system) => Err(ArchiveError::new(
+            "unsupported_platform",
+            format!("No archive engine is bundled for {architecture}-{operating_system}"),
+        )),
+    }
+}
+
+fn require_file(path: &Path) -> Result<(), ArchiveError> {
+    if path.is_file() {
+        Ok(())
+    } else {
+        Err(ArchiveError::new(
+            "archive_not_found",
+            format!("Archive not found: {}", path.display()),
+        ))
+    }
+}
+
+fn extract_args(archive: &Path, destination: &Path, entries: &[String]) -> Vec<OsString> {
+    let mut args = vec![
+        "x".into(),
+        "-bsp1".into(),
+        "-bb1".into(),
+        "-y".into(),
+        format!("-o{}", destination.display()).into(),
+        "--".into(),
+        archive.as_os_str().to_owned(),
+    ];
+    args.extend(entries.iter().map(OsString::from));
+    args
+}
+
+fn create_args(
+    archive: &Path,
+    plan: &CreationPlan,
+    format: ArchiveFormat,
+    compression: CompressionLevel,
+    password: Option<&str>,
+) -> Vec<OsString> {
+    let mut args = vec![
+        "a".into(),
+        format.switch().into(),
+        compression.switch().into(),
+        "-bsp1".into(),
+        "-bb1".into(),
+        "-y".into(),
+        "-scsUTF-8".into(),
+        format!("-i@{}", plan.listfile.path().display()).into(),
+    ];
+    if password.is_some_and(|value| !value.is_empty()) {
+        args.push("-p".into());
+        match format {
+            ArchiveFormat::Zip => args.push("-mem=AES256".into()),
+            ArchiveFormat::SevenZip => args.push("-mhe=on".into()),
+        }
+    }
+    args.push("--".into());
+    args.push(archive.as_os_str().to_owned());
+    args
+}
+
+fn collect_creation_entries(
+    path: &Path,
+    root: &Path,
+    names: &mut Vec<OsString>,
+    total_bytes: &mut u64,
+    skipped_links: &mut usize,
+) -> Result<bool, ArchiveError> {
+    let metadata = fs::symlink_metadata(path).map_err(|error| {
+        ArchiveError::new(
+            "invalid_source",
+            format!("Could not inspect {}: {error}", path.display()),
+        )
+    })?;
+    if metadata.file_type().is_symlink() {
+        *skipped_links += 1;
+        return Ok(false);
+    }
+    if metadata.is_file() {
+        *total_bytes = total_bytes.saturating_add(metadata.len());
+        names.push(relative_creation_name(path, root)?);
+        return Ok(true);
+    }
+    if !metadata.is_dir() {
+        return Err(ArchiveError::new(
+            "unsafe_file_type",
+            format!("Special files cannot be archived: {}", path.display()),
+        ));
+    }
+    let mut children = fs::read_dir(path)
+        .map_err(|error| {
+            ArchiveError::new(
+                "invalid_source",
+                format!("Could not read {}: {error}", path.display()),
+            )
+        })?
+        .map(|entry| {
+            entry.map(|entry| entry.path()).map_err(|error| {
+                ArchiveError::new(
+                    "invalid_source",
+                    format!("Could not read an input: {error}"),
+                )
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    children.sort();
+    let mut included_child = false;
+    for child in children {
+        included_child |=
+            collect_creation_entries(&child, root, names, total_bytes, skipped_links)?;
+    }
+    if !included_child {
+        names.push(relative_creation_name(path, root)?);
+    }
+    Ok(true)
+}
+
+fn relative_creation_name(path: &Path, root: &Path) -> Result<OsString, ArchiveError> {
+    let relative = path.strip_prefix(root).map_err(|_| {
+        ArchiveError::new("invalid_source", "Could not derive a relative archive path")
+    })?;
+    let name = relative.to_str().ok_or_else(|| {
+        ArchiveError::new(
+            "invalid_source",
+            "An archive input name could not be represented as Unicode",
+        )
+    })?;
+    if name.is_empty() || name.contains(['\n', '\r']) {
+        return Err(ArchiveError::new(
+            "invalid_source",
+            "Archive input names cannot be empty or contain line breaks",
+        ));
+    }
+    Ok(relative.as_os_str().to_owned())
+}
+
+#[cfg(unix)]
+fn ensure_same_filesystem(paths: &[PathBuf]) -> Result<(), ArchiveError> {
+    use std::os::unix::fs::MetadataExt;
+    let device = fs::metadata(&paths[0])
+        .map_err(|error| {
+            ArchiveError::new(
+                "invalid_source",
+                format!("Could not inspect an input: {error}"),
+            )
+        })?
+        .dev();
+    if paths.iter().skip(1).any(|path| {
+        fs::metadata(path)
+            .map(|metadata| metadata.dev() != device)
+            .unwrap_or(true)
+    }) {
+        Err(ArchiveError::new(
+            "ambiguous_roots",
+            "Archive inputs span multiple filesystem roots",
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(not(unix))]
+fn ensure_same_filesystem(_paths: &[PathBuf]) -> Result<(), ArchiveError> {
+    Ok(())
+}
+
+fn run(
+    binary: &Path,
+    args: &[OsString],
+    password: Option<&str>,
+    current_directory: Option<&Path>,
+) -> Result<Output, ArchiveError> {
+    let child = spawn_command(
+        binary,
+        args,
+        password,
+        current_directory,
+        Stdio::piped(),
+        Stdio::piped(),
+    )?;
+
+    let output = child.wait_with_output().map_err(|error| {
+        ArchiveError::new(
+            "engine_unavailable",
+            format!("Failed to wait for 7-Zip: {error}"),
+        )
+    })?;
+
+    if output.status.success() {
+        Ok(output)
+    } else {
+        Err(classify_failure(&output))
+    }
+}
+
+fn spawn_command(
+    binary: &Path,
+    args: &[OsString],
+    password: Option<&str>,
+    current_directory: Option<&Path>,
+    stdout: Stdio,
+    stderr: Stdio,
+) -> Result<Child, ArchiveError> {
+    let password = password.filter(|value| !value.is_empty());
+    if let Some(password) = password {
+        if args
+            .iter()
+            .any(|argument| argument.to_string_lossy().contains(password))
+        {
+            return Err(ArchiveError::new(
+                "unsafe_password_transport",
+                "Refusing to place an archive password in process arguments",
+            ));
+        }
+    }
+
+    let mut command = Command::new(binary);
+    command
+        .args(args)
+        .env("LC_ALL", "C")
+        .stdin(if password.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
+        .stdout(stdout)
+        .stderr(stderr);
+
+    if let Some(directory) = current_directory {
+        command.current_dir(directory);
+    }
+
+    let mut child = command.spawn().map_err(|error| {
+        ArchiveError::new(
+            "engine_unavailable",
+            format!("Failed to start 7-Zip: {error}"),
+        )
+    })?;
+
+    if let Some(password) = password {
+        write_password(&mut child, password)?;
+    }
+    Ok(child)
+}
+
+fn classify_failure(output: &Output) -> ArchiveError {
+    classify_failure_parts(
+        &output.status,
+        &String::from_utf8_lossy(&output.stdout),
+        &String::from_utf8_lossy(&output.stderr),
+    )
+}
+
+fn classify_failure_parts(status: &ExitStatus, stdout: &str, stderr: &str) -> ArchiveError {
+    let stdout = stdout.trim();
+    let stderr = stderr.trim();
+    let normalized = format!("{stderr}\n{stdout}").to_ascii_lowercase();
+    let code = if normalized.contains("wrong password") {
+        "wrong_password"
+    } else if normalized.contains("enter password")
+        || normalized.contains("password is required")
+        || normalized.contains("can not open encrypted archive")
+    {
+        "password_required"
+    } else if normalized.contains("unsupported method") {
+        "unsupported_method"
+    } else if normalized.contains("unexpected end")
+        || normalized.contains("data error")
+        || normalized.contains("crc failed")
+    {
+        "damaged_archive"
+    } else if normalized.contains("is not archive")
+        || normalized.contains("cannot open file as archive")
+    {
+        "invalid_archive"
+    } else {
+        "engine_failed"
+    };
+    let status = status
+        .code()
+        .map_or_else(|| "terminated".to_string(), |value| value.to_string());
+    let message = match code {
+        "password_required" => "This archive requires a password.".to_string(),
+        "wrong_password" => "The archive password is incorrect.".to_string(),
+        "damaged_archive" => "The archive is damaged or incomplete.".to_string(),
+        "invalid_archive" => "The selected file is not a supported archive.".to_string(),
+        "unsupported_method" => {
+            "The archive uses a compression or encryption method this engine does not support."
+                .to_string()
+        }
+        _ => format!("7-Zip failed with exit code {status}"),
+    };
+    ArchiveError::new(code, message)
+}
+
+fn write_password(child: &mut Child, password: &str) -> Result<(), ArchiveError> {
+    let mut stdin = child.stdin.take().ok_or_else(|| {
+        ArchiveError::new("engine_unavailable", "7-Zip password input was unavailable")
+    })?;
+    stdin.write_all(password.as_bytes()).map_err(|error| {
+        ArchiveError::new(
+            "engine_unavailable",
+            format!("Failed to send password to 7-Zip: {error}"),
+        )
+    })?;
+    stdin.write_all(b"\n").map_err(|error| {
+        ArchiveError::new(
+            "engine_unavailable",
+            format!("Failed to send password to 7-Zip: {error}"),
+        )
+    })
+}
+
+fn parse_slt(text: &str, fallback_path: Option<&str>) -> Result<Vec<ArchiveEntry>, ArchiveError> {
+    let normalized = text.replace("\r\n", "\n");
+    let blocks = normalized
+        .split("\n\n")
+        .filter(|block| !block.trim().is_empty())
+        .collect::<Vec<_>>();
+    let fallback_path = (blocks.len() == 1).then_some(fallback_path).flatten();
+    blocks
+        .into_iter()
+        .map(|block| parse_slt_entry(block, fallback_path))
+        .collect()
+}
+
+fn parse_slt_entry(block: &str, fallback_path: Option<&str>) -> Result<ArchiveEntry, ArchiveError> {
+    let mut path = None;
+    let mut folder = false;
+    let mut size = None;
+    let mut packed_size = None;
+    let mut modified = None;
+    let mut encrypted = false;
+    let mut method = None;
+    let mut is_link = false;
+    let mut link_target = None;
+
+    for line in block.lines() {
+        if line.is_empty() || line == "Enter password:" {
+            continue;
+        }
+        let Some((key, value)) = line.split_once(" = ") else {
+            return Err(ArchiveError::new(
+                "engine_protocol",
+                format!("7-Zip returned an unrepresentable technical-list line: {line:?}"),
+            ));
+        };
+        match key {
+            "Path" => set_once(&mut path, value.to_string(), "Path")?,
+            "Folder" => folder = value == "+",
+            "Attributes" => folder |= value.starts_with('D'),
+            "Mode" => is_link |= value.starts_with('l'),
+            "Size" => size = parse_optional_number(value, "Size")?,
+            "Packed Size" => packed_size = parse_optional_number(value, "Packed Size")?,
+            "Modified" if !value.is_empty() => modified = Some(value.to_string()),
+            "Encrypted" => encrypted = value == "+",
+            "Method" if !value.is_empty() => method = Some(value.to_string()),
+            "Symbolic Link" | "Hard Link" if !value.is_empty() => {
+                is_link = true;
+                link_target = Some(value.to_string());
+            }
+            _ => {}
+        }
+    }
+
+    Ok(ArchiveEntry {
+        path: path
+            .or_else(|| fallback_path.map(str::to_string))
+            .ok_or_else(|| ArchiveError::new("engine_protocol", "7-Zip entry had no path"))?,
+        is_directory: folder,
+        size,
+        packed_size,
+        modified,
+        encrypted,
+        method,
+        is_link,
+        link_target,
+    })
+}
+
+fn fallback_entry_name(archive: &Path) -> Option<String> {
+    let name = archive.file_name()?.to_str()?;
+    let lower = name.to_ascii_lowercase();
+    for suffix in [".tar.gz", ".tar.bz2", ".tar.xz", ".tar.zst"] {
+        if lower.ends_with(suffix) {
+            return Some(name[..name.len() - suffix.len()].to_string() + ".tar");
+        }
+    }
+    for suffix in [".tgz", ".tbz", ".tbz2", ".txz", ".tzst"] {
+        if lower.ends_with(suffix) {
+            return Some(name[..name.len() - suffix.len()].to_string() + ".tar");
+        }
+    }
+    archive.file_stem()?.to_str().map(str::to_string)
+}
+
+fn parse_optional_number(value: &str, field: &str) -> Result<Option<u64>, ArchiveError> {
+    if value.is_empty() {
+        Ok(None)
+    } else {
+        value.parse().map(Some).map_err(|_| {
+            ArchiveError::new(
+                "engine_protocol",
+                format!("7-Zip returned an invalid {field}"),
+            )
+        })
+    }
+}
+
+fn set_once<T>(slot: &mut Option<T>, value: T, field: &str) -> Result<(), ArchiveError> {
+    if slot.replace(value).is_some() {
+        Err(ArchiveError::new(
+            "engine_protocol",
+            format!("7-Zip returned duplicate {field} data"),
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{
+        fs, process, thread,
+        time::{Duration, SystemTime, UNIX_EPOCH},
+    };
+
+    fn scratch(name: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path =
+            std::env::temp_dir().join(format!("archive-app-{name}-{}-{nanos}", process::id()));
+        fs::create_dir_all(&path).unwrap();
+        path
+    }
+
+    #[test]
+    fn parses_technical_listing_without_losing_equals_or_unicode() {
+        let entries = parse_slt(
+            "Path = résumé = final.txt\nFolder = -\nSize = 12\nPacked Size = 9\nModified = 2026-08-26 10:30:00\nEncrypted = +\nMethod = LZMA2\n\n",
+            None,
+        )
+        .unwrap();
+        assert_eq!(entries[0].path, "résumé = final.txt");
+        assert_eq!(entries[0].size, Some(12));
+        assert_eq!(entries[0].modified.as_deref(), Some("2026-08-26 10:30:00"));
+        assert!(entries[0].encrypted);
+    }
+
+    #[test]
+    fn rejects_multiline_names_in_text_protocol() {
+        let error = parse_slt("Path = first line\nsecond line\nFolder = -\n", None).unwrap_err();
+        assert_eq!(error.code, "engine_protocol");
+    }
+
+    #[test]
+    fn names_single_streams_without_technical_list_paths() {
+        let entries = parse_slt("Size = 20\nPacked Size = 10\n", Some("archive.tar")).unwrap();
+        assert_eq!(entries[0].path, "archive.tar");
+        assert_eq!(
+            fallback_entry_name(Path::new("backup.tbz2")).as_deref(),
+            Some("backup.tar")
+        );
+        assert_eq!(
+            fallback_entry_name(Path::new("document.xz")).as_deref(),
+            Some("document")
+        );
+    }
+
+    #[test]
+    fn encrypted_round_trip_uses_stdin_password() {
+        let root = scratch("encrypted");
+        let source = root.join("source");
+        let destination = root.join("extracted");
+        let archive = root.join("sample.7z");
+        fs::create_dir_all(&source).unwrap();
+        fs::write(source.join("hello = नमस्ते.txt"), "archive engine contract").unwrap();
+
+        let engine = bundled_engine().unwrap();
+        let plan = prepare_creation(&[source.join("hello = नमस्ते.txt")], &archive).unwrap();
+        let create_output = create_archive(
+            &engine,
+            &archive,
+            &plan,
+            ArchiveFormat::SevenZip,
+            CompressionLevel::Normal,
+            Some("sprint1-password"),
+        )
+        .unwrap();
+        assert!(!String::from_utf8_lossy(&create_output.stdout).contains("sprint1-password"));
+        assert!(!String::from_utf8_lossy(&create_output.stderr).contains("sprint1-password"));
+        let entries = list_archive(&engine, &archive, Some("sprint1-password")).unwrap();
+        assert_eq!(entries[0].path, "hello = नमस्ते.txt");
+        test_archive(&engine, &archive, Some("sprint1-password")).unwrap();
+        extract_archive(&engine, &archive, &destination, Some("sprint1-password")).unwrap();
+        assert_eq!(
+            fs::read_to_string(destination.join("hello = नमस्ते.txt")).unwrap(),
+            "archive engine contract"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn child_process_can_be_cancelled() {
+        let mut child = Command::new(bundled_engine().unwrap())
+            .args(["b", "-bsp1"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        thread::sleep(Duration::from_millis(150));
+        child.kill().unwrap();
+        assert!(!child.wait_with_output().unwrap().status.success());
+    }
+
+    #[test]
+    fn pinned_engine_version_is_available() {
+        assert!(engine_version(&bundled_engine().unwrap())
+            .unwrap()
+            .contains(PINNED_ENGINE_VERSION));
+    }
+
+    #[test]
+    fn rejects_passwords_in_process_arguments() {
+        let error = run(
+            &bundled_engine().unwrap(),
+            &["t".into(), "-pdo-not-leak".into(), "archive.7z".into()],
+            Some("do-not-leak"),
+            None,
+        )
+        .unwrap_err();
+        assert_eq!(error.code, "unsafe_password_transport");
+    }
+
+    #[test]
+    fn archive_format_requires_matching_output_extension() {
+        ArchiveFormat::Zip
+            .validate_output(Path::new("/tmp/archive.ZIP"))
+            .unwrap();
+        assert_eq!(
+            ArchiveFormat::SevenZip
+                .validate_output(Path::new("/tmp/archive.zip"))
+                .unwrap_err()
+                .code,
+            "extension_mismatch"
+        );
+    }
+
+    #[test]
+    fn classifies_corruption_password_and_unsupported_method_errors() {
+        let status = Command::new(bundled_engine().unwrap())
+            .arg("definitely-not-a-command")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .unwrap();
+        for (message, expected) in [
+            ("Unexpected end of data", "damaged_archive"),
+            ("Wrong password", "wrong_password"),
+            ("Enter password", "password_required"),
+            ("Unsupported Method", "unsupported_method"),
+            ("Cannot open file as archive", "invalid_archive"),
+        ] {
+            assert_eq!(
+                classify_failure_parts(&status, "", message).code,
+                expected,
+                "{message}"
+            );
+        }
+    }
+}

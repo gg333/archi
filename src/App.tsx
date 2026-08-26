@@ -1,0 +1,701 @@
+import { useEffect, useMemo, useRef, useState } from "react";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
+import { getCurrentWindow } from "@tauri-apps/api/window";
+import { confirm, open, save } from "@tauri-apps/plugin-dialog";
+import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
+import {
+  archiveChanged, archiveError, cancelJob, clearDiagnostics, createArchive,
+  defaultZipOutput, entryIcons, entryPage, exportDiagnostics, extractArchive, getSettings, jobStatus,
+  openArchive, openDestination, recordDiagnostic, resetSettings, saveSettings,
+  shellIntegrationStatus, takeShellRequests, testArchive,
+} from "./api";
+import type {
+  ArchiveDocument, ArchiveEntry, ArchiveError, ArchiveFormat, CompressionLevel,
+  ConflictPolicy, EntryPage, JobSnapshot, Settings, ShellIntegrationStatus,
+  ShellRequest, SortKey,
+} from "./types";
+import "./App.css";
+import { Modal } from "./components/Modal";
+
+const PAGE_SIZE = 200;
+const archiveFilters = [
+  "zip", "7z", "rar", "tar", "gz", "tgz", "bz2", "tbz2", "xz", "txz",
+  "zst", "cab", "iso", "lzh", "lha", "ar", "cpio",
+];
+const defaultSettings: Settings = {
+  version: 1,
+  defaultFormat: "zip",
+  defaultCompression: "normal",
+  extractionDestination: "ask",
+  customDestination: null,
+  revealOnCompletion: true,
+  notifications: false,
+  showHiddenEntries: false,
+  maxExpandedBytes: 10 * 1024 ** 3,
+  maxConcurrentJobs: 1,
+};
+
+type Operation = "opening" | "extracting" | "creating" | "testing" | null;
+type PasswordAction =
+  | { kind: "open"; path: string }
+  | { kind: "extract"; path: string; destination: string; entries: string[]; reveal: boolean; conflictPolicy?: ConflictPolicy }
+  | { kind: "test"; path: string };
+interface EntryMenu { entry: ArchiveEntry; x: number; y: number }
+interface ExtractDialog { entries: string[]; destination: string }
+
+function App() {
+  const [archive, setArchive] = useState<ArchiveDocument | null>(null);
+  const [entries, setEntries] = useState<EntryPage | null>(null);
+  const [folder, setFolder] = useState("");
+  const [folderHistory, setFolderHistory] = useState([""]);
+  const [folderHistoryIndex, setFolderHistoryIndex] = useState(0);
+  const [query, setQuery] = useState("");
+  const [sort, setSort] = useState<SortKey>("name");
+  const [descending, setDescending] = useState(false);
+  const [pageNumber, setPageNumber] = useState(1);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [lastSelected, setLastSelected] = useState<string | null>(null);
+  const [archiveNeedsPassword, setArchiveNeedsPassword] = useState(false);
+  const [archiveOutdated, setArchiveOutdated] = useState(false);
+  const [monitorChanges, setMonitorChanges] = useState(true);
+  const [error, setError] = useState<ArchiveError | null>(null);
+  const [status, setStatus] = useState("Choose an archive to inspect its contents.");
+  const [operation, setOperation] = useState<Operation>(null);
+  const [job, setJob] = useState<JobSnapshot | null>(null);
+  const [conflictPolicy, setConflictPolicy] = useState<ConflictPolicy>("ask");
+  const [passwordAction, setPasswordAction] = useState<PasswordAction | null>(null);
+  const [password, setPassword] = useState("");
+  const [passwordError, setPasswordError] = useState<string | null>(null);
+  const [showPassword, setShowPassword] = useState(false);
+  const [extractDialog, setExtractDialog] = useState<ExtractDialog | null>(null);
+  const [conflictMessage, setConflictMessage] = useState<string | null>(null);
+  const [revealExtraction, setRevealExtraction] = useState(true);
+  const [createOpen, setCreateOpen] = useState(false);
+  const [createInputs, setCreateInputs] = useState<string[]>([]);
+  const [createOutput, setCreateOutput] = useState("");
+  const [createFormat, setCreateFormat] = useState<ArchiveFormat>("zip");
+  const [compression, setCompression] = useState<CompressionLevel>("normal");
+  const [encrypt, setEncrypt] = useState(false);
+  const [createPassword, setCreatePassword] = useState("");
+  const [createConfirmation, setCreateConfirmation] = useState("");
+  const [showCreatePassword, setShowCreatePassword] = useState(false);
+  const [entryMenu, setEntryMenu] = useState<EntryMenu | null>(null);
+  const [propertiesEntry, setPropertiesEntry] = useState<ArchiveEntry | null>(null);
+  const [settings, setSettings] = useState<Settings>(defaultSettings);
+  const [settingsDraft, setSettingsDraft] = useState<Settings>(defaultSettings);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [integration, setIntegration] = useState<ShellIntegrationStatus | null>(null);
+  const [dragActive, setDragActive] = useState(false);
+  const [nativeIcons, setNativeIcons] = useState<Record<string, string>>({});
+  const searchRef = useRef<HTMLInputElement>(null);
+  const shellBusy = useRef(false);
+  const requestedIcons = useRef(new Set<string>());
+  const busy = operation !== null;
+  const selectedEntries = useMemo(
+    () => entries?.entries.filter((entry) => selected.has(entry.path)) ?? [],
+    [entries, selected],
+  );
+  const selectedSize = selectedEntries.reduce((total, entry) => total + (entry.size ?? 0), 0);
+
+  useEffect(() => {
+    void getSettings().then((value) => {
+      setSettings(value);
+      setSettingsDraft(value);
+      setCreateFormat(value.defaultFormat);
+      setCompression(value.defaultCompression);
+      setRevealExtraction(value.revealOnCompletion);
+    }).catch((caught) => setError(archiveError(caught)));
+  }, []);
+
+  useEffect(() => {
+    void getCurrentWindow().setTitle(archive ? `${archive.name} — Archive App` : "Archive App");
+  }, [archive]);
+
+  useEffect(() => {
+    if (busy) return;
+    let active = true;
+    const poll = async () => {
+      if (!active || shellBusy.current) return;
+      shellBusy.current = true;
+      try {
+        for (const request of await takeShellRequests()) {
+          if (!active) break;
+          await handleShellRequest(request);
+        }
+      } catch (caught) {
+        if (active) setError(archiveError(caught));
+      } finally { shellBusy.current = false; }
+    };
+    void poll();
+    const timer = window.setInterval(poll, 400);
+    return () => { active = false; window.clearInterval(timer); };
+  }, [busy, conflictPolicy, settings]);
+
+  useEffect(() => {
+    if (!archive) { setEntries(null); return; }
+    let active = true;
+    const timer = window.setTimeout(() => {
+      void entryPage(
+        archive.path, folder, query, sort, descending, pageNumber, PAGE_SIZE,
+        settings.showHiddenEntries,
+      ).then((value) => {
+        if (!active) return;
+        setEntries(value);
+        if (value.page !== pageNumber) setPageNumber(value.page);
+      }).catch((caught) => active && setError(archiveError(caught)));
+    }, query ? 150 : 0);
+    return () => { active = false; window.clearTimeout(timer); };
+  }, [archive, folder, query, sort, descending, pageNumber, settings.showHiddenEntries]);
+
+  useEffect(() => {
+    if (!entries) return;
+    const keys = [...new Set(entries.entries.map(entryIconKey))]
+      .filter((key) => key !== "__link__" && !requestedIcons.current.has(key));
+    if (!keys.length) return;
+    keys.forEach((key) => requestedIcons.current.add(key));
+    void entryIcons(keys)
+      .then((icons) => setNativeIcons((current) => ({ ...current, ...icons })))
+      .catch(() => undefined);
+  }, [entries]);
+
+  useEffect(() => {
+    if (!operation || operation === "opening") { setJob(null); return; }
+    let active = true;
+    const poll = async () => {
+      try { const current = await jobStatus(); if (active) setJob(current); } catch { /* result owns error */ }
+    };
+    void poll();
+    const timer = window.setInterval(poll, 250);
+    return () => { active = false; window.clearInterval(timer); };
+  }, [operation]);
+
+  useEffect(() => {
+    if (!archive || busy || archiveOutdated || !monitorChanges) return;
+    let active = true;
+    const check = async () => {
+      try { if (active && await archiveChanged(archive.path)) setArchiveOutdated(true); }
+      catch (caught) { if (active) { setArchiveOutdated(true); setError(archiveError(caught)); } }
+    };
+    const timer = window.setInterval(check, 3000);
+    return () => { active = false; window.clearInterval(timer); };
+  }, [archive, busy, archiveOutdated, monitorChanges]);
+
+  useEffect(() => {
+    if (error) void recordDiagnostic("error", error.code).catch(() => undefined);
+  }, [error]);
+
+  useEffect(() => {
+    if (!entryMenu) return;
+    const close = () => setEntryMenu(null);
+    window.addEventListener("click", close);
+    return () => window.removeEventListener("click", close);
+  }, [entryMenu]);
+
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    void getCurrentWebview().onDragDropEvent((event) => {
+      if (event.payload.type === "enter" || event.payload.type === "over") setDragActive(true);
+      else if (event.payload.type === "leave") setDragActive(false);
+      else if (event.payload.type === "drop") {
+        setDragActive(false);
+        const paths = event.payload.paths;
+        if (!paths.length || busy) return;
+        if (!createOpen && paths.length === 1 && isArchivePath(paths[0])) void loadArchive(paths[0]);
+        else { addCreateInputs(paths); setCreateOpen(true); }
+      }
+    }).then((remove) => { if (disposed) remove(); else unlisten = remove; });
+    return () => { disposed = true; unlisten?.(); };
+  }, [busy, createOpen]);
+
+  useEffect(() => {
+    const shortcut = (event: KeyboardEvent) => {
+      const modifier = event.metaKey || event.ctrlKey;
+      if (event.key === "Escape") {
+        if (entryMenu) setEntryMenu(null);
+        else if (propertiesEntry) setPropertiesEntry(null);
+        else if (extractDialog) setExtractDialog(null);
+        else if (settingsOpen) setSettingsOpen(false);
+        else if (createOpen) setCreateOpen(false);
+        else if (passwordAction) clearPasswordPrompt();
+        else if (job?.cancellable) void requestCancellation();
+        return;
+      }
+      if (!modifier || passwordAction || createOpen || settingsOpen || extractDialog) return;
+      const key = event.key.toLowerCase();
+      if (key === "o") { event.preventDefault(); void chooseArchive(); }
+      else if (key === "n") { event.preventDefault(); openCreateDialog(); }
+      else if (key === "e" && archive) { event.preventDefault(); void requestExtraction(selected.size ? [...selected] : []); }
+      else if (key === "t" && archive) { event.preventDefault(); void requestTest(); }
+      else if (key === "f" && archive) { event.preventDefault(); searchRef.current?.focus(); }
+      else if (key === "a" && event.shiftKey) { event.preventDefault(); openCreateDialog(); void addFiles(); }
+      else if (key === "a" && entries) { event.preventDefault(); setSelected(new Set(entries.entries.map((entry) => entry.path))); }
+      else if (key === "i" && selectedEntries.length === 1) { event.preventDefault(); setPropertiesEntry(selectedEntries[0]); }
+      else if (key === "c" && selected.size) {
+        event.preventDefault();
+        void copyPaths([...selected]);
+      }
+    };
+    window.addEventListener("keydown", shortcut);
+    return () => window.removeEventListener("keydown", shortcut);
+  }, [archive, createOpen, entries, entryMenu, extractDialog, job, passwordAction, propertiesEntry, selected, selectedEntries, settingsOpen]);
+
+  async function chooseArchive() {
+    const path = await open({ multiple: false, directory: false, title: "Open Archive", filters: [{ name: "Archives", extensions: archiveFilters }] });
+    if (path) await loadArchive(path);
+  }
+
+  async function handleShellRequest(request: ShellRequest) {
+    if (!request.paths.length) return;
+    if (request.action === "open") {
+      await loadArchive(request.paths[0]);
+      return;
+    }
+    if (request.action === "compress_options") {
+      setCreateInputs(request.paths);
+      setCreateFormat(settings.defaultFormat);
+      setCompression(settings.defaultCompression);
+      setCreateOutput("");
+      setCreateOpen(true);
+      setStatus(`${request.paths.length} Finder ${request.paths.length === 1 ? "item" : "items"} ready to compress.`);
+      return;
+    }
+    if (request.action === "compress_zip") {
+      try {
+        const output = await defaultZipOutput(request.paths);
+        await runCreation(request.paths, output, "zip", settings.defaultCompression);
+      } catch (caught) { setError(archiveError(caught)); setStatus("Finder compression failed."); }
+      return;
+    }
+    if (request.action === "extract_here" || request.action === "extract_to_folder") {
+      const destination = request.action === "extract_to_folder"
+        ? await open({ multiple: false, directory: true, title: "Extract Finder Selection" })
+        : null;
+      if (request.action === "extract_to_folder" && !destination) return;
+      await runShellExtractions(request.paths, destination);
+      return;
+    }
+    if (request.action === "test_archive") await runShellTests(request.paths);
+  }
+
+  async function runShellExtractions(paths: string[], sharedDestination: string | null) {
+    let firstDestination: string | null = null;
+    for (const path of paths) {
+      let document: ArchiveDocument;
+      try {
+        setOperation("opening"); setStatus(`Reading ${leafName(path)}…`);
+        document = await openArchive(path);
+        installDocument(document, false);
+      } catch (caught) {
+        const failure = archiveError(caught);
+        const destination = sharedDestination ?? parentPath(path);
+        if (isPasswordError(failure)) {
+          setPasswordError(null);
+          setPasswordAction({ kind: "extract", path, destination, entries: [], reveal: settings.revealOnCompletion, conflictPolicy: "keepBoth" });
+          setStatus("Password required to extract the Finder selection.");
+        } else { setError(failure); setStatus("Finder extraction failed."); }
+        return;
+      } finally { setOperation(null); }
+      const destination = sharedDestination ?? parentPath(path);
+      firstDestination ??= destination;
+      if (!await runExtraction(path, destination, [], false, undefined, false, "keepBoth")) return;
+    }
+    if (settings.revealOnCompletion && firstDestination) {
+      try { await openDestination(firstDestination); } catch (caught) { setError(archiveError(caught)); }
+    }
+  }
+
+  async function runShellTests(paths: string[]) {
+    for (const path of paths) {
+      try {
+        setOperation("opening"); setStatus(`Reading ${leafName(path)}…`);
+        const document = await openArchive(path);
+        installDocument(document, false);
+      } catch (caught) {
+        const failure = archiveError(caught);
+        if (isPasswordError(failure)) {
+          setPasswordError(null);
+          setPasswordAction({ kind: "test", path });
+          setStatus("Password required to test the Finder selection.");
+        } else { setError(failure); setStatus("Finder integrity test failed."); }
+        return;
+      } finally { setOperation(null); }
+      if (!await runTest(path)) return;
+    }
+  }
+
+  async function loadArchive(path: string, suppliedPassword?: string): Promise<boolean> {
+    setOperation("opening"); setError(null); setStatus("Reading archive…");
+    try {
+      const document = await openArchive(path, suppliedPassword);
+      installDocument(document, suppliedPassword !== undefined);
+      setStatus(`${document.entryCount.toLocaleString()} entries`);
+      clearPasswordPrompt();
+      void recordDiagnostic("open").catch(() => undefined);
+      return true;
+    } catch (caught) {
+      const failure = archiveError(caught);
+      if (isPasswordError(failure)) {
+        setPasswordError(suppliedPassword === undefined ? null : failure.message);
+        setPasswordAction({ kind: "open", path }); setStatus(suppliedPassword === undefined ? "Password required to open archive." : "The password was not accepted. Try again.");
+      } else { setError(failure); setStatus("Could not open archive."); }
+      return false;
+    } finally { setOperation(null); }
+  }
+
+  function installDocument(document: ArchiveDocument, passwordProvided: boolean) {
+    setArchive(document);
+    setArchiveNeedsPassword(passwordProvided || document.encrypted);
+    resetBrowser(); setArchiveOutdated(false); setMonitorChanges(true);
+  }
+
+  function resetBrowser() {
+    setFolder(""); setFolderHistory([""]); setFolderHistoryIndex(0); setQuery("");
+    setPageNumber(1); setSelected(new Set()); setLastSelected(null);
+  }
+
+  function navigateFolder(next: string) {
+    setFolder(next); setQuery(""); setPageNumber(1); setSelected(new Set());
+    setFolderHistory((current) => {
+      const history = [...current.slice(0, folderHistoryIndex + 1), next];
+      setFolderHistoryIndex(history.length - 1);
+      return history;
+    });
+  }
+
+  function moveHistory(nextIndex: number) {
+    const next = folderHistory[nextIndex];
+    if (next === undefined) return;
+    setFolderHistoryIndex(nextIndex); setFolder(next); setQuery(""); setPageNumber(1); setSelected(new Set());
+  }
+
+  function goUp() {
+    if (folder) navigateFolder(folder.includes("/") ? folder.slice(0, folder.lastIndexOf("/")) : "");
+  }
+
+  async function requestExtraction(paths: string[] = []) {
+    if (!archive) return;
+    setConflictMessage(null);
+    let destination: string | null = null;
+    if (settings.extractionDestination === "custom") destination = settings.customDestination;
+    else if (settings.extractionDestination === "sibling") destination = siblingExtractionPath(archive.path, archive.name);
+    else destination = await chooseExtractFolder(paths);
+    if (!destination) return;
+    setRevealExtraction(settings.revealOnCompletion);
+    setExtractDialog({ entries: paths, destination });
+  }
+
+  async function chooseExtractFolder(paths: string[]) {
+    if (!archive) return null;
+    return open({ multiple: false, directory: true, title: paths.length === 1 ? `Extract ${leafName(paths[0])}` : `Extract ${archive.name}` });
+  }
+
+  async function changeExtractFolder() {
+    if (!extractDialog) return;
+    const destination = await chooseExtractFolder(extractDialog.entries);
+    if (destination) setExtractDialog({ ...extractDialog, destination });
+  }
+
+  async function submitExtraction(event: React.FormEvent) {
+    event.preventDefault();
+    if (!archive || !extractDialog) return;
+    const request = extractDialog;
+    setConflictMessage(null);
+    setExtractDialog(null);
+    if (archiveNeedsPassword) {
+      setPasswordError(null);
+      setPasswordAction({ kind: "extract", path: archive.path, destination: request.destination, entries: request.entries, reveal: revealExtraction });
+    } else await runExtraction(archive.path, request.destination, request.entries, revealExtraction);
+  }
+
+  async function runExtraction(archivePath: string, destination: string, paths: string[], reveal: boolean, suppliedPassword?: string, allowUnbounded = false, policy: ConflictPolicy = conflictPolicy): Promise<boolean> {
+    setOperation("extracting"); setError(null); setStatus(paths.length ? "Extracting selected entries…" : "Extracting archive…");
+    try {
+      const result = await extractArchive(archivePath, destination, policy, paths.length ? paths : undefined, suppliedPassword, settings.maxExpandedBytes, allowUnbounded);
+      const changes = [
+        `${result.filesExtracted.toLocaleString()} ${result.filesExtracted === 1 ? "file" : "files"} extracted`,
+        result.filesSkipped ? `${result.filesSkipped.toLocaleString()} skipped` : "",
+        result.renamed ? `${result.renamed.toLocaleString()} renamed` : "",
+        result.warningCount ? `${result.warningCount.toLocaleString()} warnings` : "",
+      ].filter(Boolean);
+      setStatus(`${changes.join(", ")} in ${formatDuration(result.elapsedMs)}`);
+      clearPasswordPrompt(); void recordDiagnostic("extract").catch(() => undefined);
+      void notifyCompletion("Extraction complete", changes.join(", "));
+      if (reveal) { try { await openDestination(result.destination); } catch (caught) { setError(archiveError(caught)); } }
+      return true;
+    } catch (caught) {
+      const failure = archiveError(caught);
+      if (failure.code === "cancelled") { setStatus("Extraction cancelled. No destination files were changed."); clearPasswordPrompt(); }
+      else if (!allowUnbounded && (failure.code === "expansion_limit_exceeded" || failure.code === "expansion_size_unknown")) {
+        if (await confirm(`${failure.message}\n\nContinue this extraction anyway?`, { title: "Extraction size warning", kind: "warning" })) {
+          return await runExtraction(archivePath, destination, paths, reveal, suppliedPassword, true, policy);
+        }
+        setStatus("Extraction cancelled.");
+      }
+      else if (isPasswordError(failure)) {
+        setPasswordError(suppliedPassword === undefined ? null : failure.message);
+        setPasswordAction({ kind: "extract", path: archivePath, destination, entries: paths, reveal, conflictPolicy: policy });
+        setStatus(suppliedPassword === undefined ? "Enter the archive password and try again." : "The password was not accepted. Try again.");
+      } else if (failure.code === "conflict" && policy === "ask") {
+        setConflictMessage(failure.message); setConflictPolicy("keepBoth"); setRevealExtraction(reveal);
+        setExtractDialog({ entries: paths, destination }); setStatus("Choose how to handle the existing files.");
+      } else { setError(failure); setStatus("Extraction failed."); clearPasswordPrompt(); }
+      return false;
+    } finally { setOperation(null); setJob(null); }
+  }
+
+  async function runTest(archivePath: string, suppliedPassword?: string): Promise<boolean> {
+    setOperation("testing"); setError(null); setStatus("Testing archive integrity…");
+    try {
+      const result = await testArchive(archivePath, suppliedPassword);
+      setStatus(result.warningCount ? `Integrity test passed with ${result.warningCount} warnings in ${formatDuration(result.elapsedMs)}.` : `Integrity test passed in ${formatDuration(result.elapsedMs)}.`);
+      clearPasswordPrompt(); void recordDiagnostic("test").catch(() => undefined); return true;
+    } catch (caught) {
+      const failure = archiveError(caught);
+      if (failure.code === "cancelled") { setStatus("Integrity test cancelled."); clearPasswordPrompt(); }
+      else if (isPasswordError(failure)) { setPasswordError(suppliedPassword === undefined ? null : failure.message); setPasswordAction({ kind: "test", path: archivePath }); setStatus(suppliedPassword === undefined ? "Enter the archive password and try again." : "The password was not accepted. Try again."); }
+      else { setError(failure); setStatus("Integrity test failed."); clearPasswordPrompt(); }
+      return false;
+    } finally { setOperation(null); setJob(null); }
+  }
+
+  async function requestTest() {
+    if (!archive) return;
+    if (archiveNeedsPassword) { setPasswordError(null); setPasswordAction({ kind: "test", path: archive.path }); } else await runTest(archive.path);
+  }
+
+  async function submitPassword(event: React.FormEvent) {
+    event.preventDefault();
+    if (!passwordAction || !password) return;
+    if (passwordAction.kind === "open") await loadArchive(passwordAction.path, password);
+    else if (passwordAction.kind === "extract") await runExtraction(passwordAction.path, passwordAction.destination, passwordAction.entries, passwordAction.reveal, password, false, passwordAction.conflictPolicy ?? conflictPolicy);
+    else await runTest(passwordAction.path, password);
+  }
+
+  function openCreateDialog() {
+    setCreateFormat(settings.defaultFormat); setCompression(settings.defaultCompression); setCreateOpen(true);
+  }
+  async function addFiles() { addCreateInputs(await open({ multiple: true, directory: false, title: "Add Files" })); }
+  async function addFolder() { addCreateInputs(await open({ multiple: true, directory: true, title: "Add Folders" })); }
+  function addCreateInputs(paths: string | string[] | null) {
+    if (!paths) return;
+    const values = Array.isArray(paths) ? paths : [paths];
+    setCreateInputs((current) => [...new Set([...current, ...values])]);
+  }
+  async function chooseCreateOutput() {
+    const extension = createFormat === "zip" ? "zip" : "7z";
+    const path = await save({ title: "Save Archive", defaultPath: `Archive.${extension}`, filters: [{ name: createFormat === "zip" ? "ZIP Archive" : "7z Archive", extensions: [extension] }] });
+    if (path) setCreateOutput(path);
+  }
+
+  async function submitCreate(event: React.FormEvent) {
+    event.preventDefault();
+    if (!createInputs.length || !createOutput) { setError({ code: "missing_create_fields", message: "Choose input items and an output archive." }); return; }
+    if (encrypt && (!createPassword || createPassword !== createConfirmation)) { setError({ code: "password_mismatch", message: "Enter matching non-empty passwords." }); return; }
+    const passwordForJob = encrypt ? createPassword : undefined;
+    const confirmationForJob = encrypt ? createConfirmation : undefined;
+    setCreatePassword(""); setCreateConfirmation(""); setCreateOpen(false);
+    const created = await runCreation(createInputs, createOutput, createFormat, compression, passwordForJob, confirmationForJob);
+    if (!created) setCreateOpen(true);
+  }
+
+  async function runCreation(inputs: string[], output: string, format: ArchiveFormat, level: CompressionLevel, passwordForJob?: string, confirmationForJob?: string): Promise<boolean> {
+    setOperation("creating"); setError(null); setStatus("Creating archive…");
+    try {
+      const document = await createArchive(inputs, output, format, level, passwordForJob, confirmationForJob);
+      setArchive(document); setArchiveNeedsPassword(passwordForJob !== undefined); resetBrowser(); setArchiveOutdated(false); setMonitorChanges(true);
+      setStatus(`Created ${document.name} with ${document.entryCount.toLocaleString()} ${document.entryCount === 1 ? "entry" : "entries"}.${document.skippedLinks ? ` Skipped ${document.skippedLinks.toLocaleString()} symbolic ${document.skippedLinks === 1 ? "link" : "links"}.` : ""}`);
+      setCreateInputs([]); setCreateOutput(""); void recordDiagnostic("create").catch(() => undefined);
+      void notifyCompletion("Archive created", document.name);
+      return true;
+    } catch (caught) {
+      const failure = archiveError(caught);
+      if (failure.code === "cancelled") setStatus("Archive creation cancelled. No output archive was created.");
+      else { setError(failure); setStatus("Archive creation failed."); }
+      return false;
+    } finally { setOperation(null); setJob(null); }
+  }
+
+  function openSettings() {
+    setSettingsDraft({ ...settings }); setSettingsOpen(true); void refreshIntegration();
+  }
+  async function refreshIntegration() {
+    try { setIntegration(await shellIntegrationStatus()); }
+    catch (caught) { setError(archiveError(caught)); }
+  }
+  async function chooseCustomDestination() {
+    const destination = await open({ multiple: false, directory: true, title: "Default Extraction Folder" });
+    if (destination) setSettingsDraft({ ...settingsDraft, customDestination: destination });
+  }
+  async function submitSettings(event: React.FormEvent) {
+    event.preventDefault();
+    try {
+      if (settingsDraft.notifications && !await notificationPermission()) {
+        setError({ code: "notifications_denied", message: "Notifications are disabled in system settings." });
+        return;
+      }
+      const saved = await saveSettings(settingsDraft);
+      setSettings(saved); setCreateFormat(saved.defaultFormat); setCompression(saved.defaultCompression); setSettingsOpen(false); setStatus("Settings saved.");
+    } catch (caught) { setError(archiveError(caught)); }
+  }
+  async function restoreSettings() {
+    try {
+      const restored = await resetSettings();
+      setSettings(restored); setSettingsDraft(restored); setCreateFormat(restored.defaultFormat); setCompression(restored.defaultCompression); setStatus("Settings reset to defaults.");
+    } catch (caught) { setError(archiveError(caught)); }
+  }
+  async function exportLocalDiagnostics() {
+    const destination = await save({ title: "Export Diagnostics", defaultPath: "Archive App Diagnostics.log", filters: [{ name: "Log", extensions: ["log"] }] });
+    if (!destination) return;
+    try { await exportDiagnostics(destination); setStatus("Diagnostics exported."); } catch (caught) { setError(archiveError(caught)); }
+  }
+  async function clearLocalDiagnostics() {
+    if (!await confirm("Clear local diagnostic logs? This cannot be undone.", { title: "Clear diagnostic logs", kind: "warning" })) return;
+    try { await clearDiagnostics(); setStatus("Diagnostic logs cleared."); } catch (caught) { setError(archiveError(caught)); }
+  }
+  async function requestCancellation() {
+    if (await confirm("Cancel the active archive operation?", { title: "Cancel operation", kind: "warning" })) await cancelOperation();
+  }
+  async function cancelOperation() { if (await cancelJob()) setStatus("Cancelling archive operation…"); }
+  async function notifyCompletion(title: string, body: string) {
+    if (settings.notifications && await notificationPermission()) sendNotification({ title, body });
+  }
+  async function copyPaths(paths: string[]) {
+    try {
+      await navigator.clipboard.writeText(paths.join("\n"));
+      setStatus(`${paths.length} ${paths.length === 1 ? "path" : "paths"} copied.`);
+    } catch (caught) {
+      setError({ code: "clipboard_failed", message: caught instanceof Error ? caught.message : "Could not copy archive paths." });
+      setStatus("Copy failed.");
+    }
+  }
+  function clearPasswordPrompt() { setPasswordAction(null); setPassword(""); setPasswordError(null); setShowPassword(false); }
+  function changeSort(next: SortKey) {
+    if (sort === next) setDescending(!descending); else { setSort(next); setDescending(false); }
+    setPageNumber(1);
+  }
+
+  function selectEntry(event: React.MouseEvent, entry: ArchiveEntry) {
+    if (event.shiftKey && lastSelected && entries) {
+      const start = entries.entries.findIndex((value) => value.path === lastSelected);
+      const end = entries.entries.findIndex((value) => value.path === entry.path);
+      if (start >= 0 && end >= 0) setSelected(new Set(entries.entries.slice(Math.min(start, end), Math.max(start, end) + 1).map((value) => value.path)));
+    } else if (event.metaKey || event.ctrlKey) {
+      setSelected((current) => { const next = new Set(current); if (next.has(entry.path)) next.delete(entry.path); else next.add(entry.path); return next; });
+    } else setSelected(new Set([entry.path]));
+    setLastSelected(entry.path);
+  }
+
+  function handleRowKey(event: React.KeyboardEvent<HTMLTableRowElement>, index: number, entry: ArchiveEntry) {
+    if (event.key === "Enter") { event.preventDefault(); if (entry.isDirectory) navigateFolder(entry.path); else void requestExtraction([entry.path]); }
+    else if (event.key === "Backspace") { event.preventDefault(); goUp(); }
+    else if (event.key === " ") {
+      event.preventDefault(); setSelected((current) => { const next = new Set(current); if (next.has(entry.path)) next.delete(entry.path); else next.add(entry.path); return next; });
+    } else if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      const rows = [...document.querySelectorAll<HTMLTableRowElement>("tbody tr[data-entry]")];
+      const next = event.key === "ArrowDown" ? index + 1 : index - 1;
+      rows[next]?.focus();
+      if (rows[next]?.dataset.entry) setSelected(new Set([rows[next].dataset.entry!]));
+    }
+  }
+
+  const crumbs = folder ? folder.split("/") : [];
+  return (
+    <main className={`app-shell${dragActive ? " drag-active" : ""}`}>
+      <header className="app-header">
+        <div><p className="eyebrow">Local archive manager</p><h1>Archive App</h1></div>
+        <div className="header-actions"><button onClick={openSettings} disabled={busy}>Settings</button><button onClick={openCreateDialog} disabled={busy}>New Archive</button><button className="primary-button" onClick={chooseArchive} disabled={busy}>Open Archive</button></div>
+      </header>
+      {dragActive && <div className="drop-overlay" role="status">Drop an archive to open it, or files and folders to create one</div>}
+      {error && <section className="error-banner" role="alert"><div><strong>{error.code.replace(/_/g, " ")}</strong><p>{error.message}</p></div><button className="icon-button" onClick={() => setError(null)} aria-label="Dismiss error">×</button></section>}
+      {archiveOutdated && archive && <section className="change-banner" role="alert"><div><strong>Archive changed on disk</strong><p>Reload to browse the current file. No archive contents have been edited by this app.</p></div><div className="header-actions"><button onClick={() => { setArchiveOutdated(false); setMonitorChanges(false); }}>Keep browsing</button><button className="primary-button" onClick={() => void loadArchive(archive.path)}>Reload</button></div></section>}
+      {job && <section className="job-shelf" aria-label={`${job.operation} progress`}><div className="job-heading"><strong>{capitalize(job.operation)} · {capitalize(job.phase)}</strong><span>{job.percent}%</span></div><progress max="100" value={job.percent}>{job.percent}%</progress><div className="job-details" aria-live="polite"><span>{job.currentEntry ?? `${formatBytes(job.processedBytes)} of ${formatBytes(job.totalBytes)}`}</span><span>{formatDuration(job.elapsedMs)} · {formatBytes(job.bytesPerSecond)}/s · {job.warningCount} warnings</span>{job.cancellable && <button className="cancel-button" onClick={() => void requestCancellation()}>Cancel</button>}</div></section>}
+
+      {archive ? <section className="archive-panel" aria-busy={busy}>
+        <div className="archive-toolbar"><div className="archive-title"><span className="archive-icon" aria-hidden="true">▦</span><div><h2>{archive.name}</h2><p title={archive.path}>{archive.path}</p></div></div><div className="extract-actions"><button onClick={requestTest} disabled={busy}>Test</button><button onClick={() => void requestExtraction(selected.size ? [...selected] : [])} disabled={busy}>{selected.size ? `Extract ${selected.size}` : "Extract All"}…</button></div></div>
+        <div className="browser-bar">
+          <div className="navigation-buttons" aria-label="Archive navigation"><button aria-label="Back" title="Back" onClick={() => moveHistory(folderHistoryIndex - 1)} disabled={folderHistoryIndex === 0}>‹</button><button aria-label="Forward" title="Forward" onClick={() => moveHistory(folderHistoryIndex + 1)} disabled={folderHistoryIndex >= folderHistory.length - 1}>›</button><button aria-label="Up one folder" title="Up one folder" onClick={goUp} disabled={!folder}>↑</button></div>
+          <nav className="breadcrumbs" aria-label="Archive folder"><button onClick={() => navigateFolder("")} aria-current={!folder ? "page" : undefined}>{archive.name}</button>{crumbs.map((crumb, index) => { const path = crumbs.slice(0, index + 1).join("/"); return <span key={path}><span aria-hidden="true">/</span><button onClick={() => navigateFolder(path)} aria-current={path === folder ? "page" : undefined}>{crumb}</button></span>; })}</nav>
+          <label className="search-field"><span className="sr-only">Search entry names</span><input ref={searchRef} type="search" value={query} onChange={(event) => { setQuery(event.target.value); setPageNumber(1); setSelected(new Set()); }} placeholder="Search names" /></label>
+        </div>
+        <div className="table-wrap"><table><thead><tr><SortableHeader label="Name" value="name" current={sort} descending={descending} onSort={changeSort} /><th>Type</th><SortableHeader label="Size" value="size" current={sort} descending={descending} onSort={changeSort} /><SortableHeader label="Compressed" value="packedSize" current={sort} descending={descending} onSort={changeSort} /><SortableHeader label="Ratio" value="ratio" current={sort} descending={descending} onSort={changeSort} /><SortableHeader label="Modified" value="modified" current={sort} descending={descending} onSort={changeSort} /><th>Encrypted</th></tr></thead>
+          <tbody>{entries?.entries.map((entry, index) => <tr key={entry.path} data-entry={entry.path} tabIndex={index === 0 || selected.has(entry.path) ? 0 : -1} aria-selected={selected.has(entry.path)} aria-label={entryLabel(entry)} className={selected.has(entry.path) ? "selected" : undefined} onClick={(event) => selectEntry(event, entry)} onKeyDown={(event) => handleRowKey(event, index, entry)} onDoubleClick={() => entry.isDirectory ? navigateFolder(entry.path) : void requestExtraction([entry.path])} onContextMenu={(event) => { event.preventDefault(); setSelected(new Set([entry.path])); setEntryMenu(contextMenuPosition(event, entry)); }} title={entry.isDirectory ? "Double-click to open; right-click for actions" : "Double-click or right-click to extract"}>
+            <td className="entry-name" title={entry.path}><EntryIcon entry={entry} source={nativeIcons[entryIconKey(entry)]} />{leafName(entry.path)}{query && parentEntryPath(entry.path) && <small>{parentEntryPath(entry.path)}</small>}</td><td>{entry.isLink ? "Link" : entry.isDirectory ? "Folder" : entry.method ?? "File"}</td><td>{entry.size === null ? "—" : formatBytes(entry.size)}</td><td>{entry.packedSize === null ? "—" : formatBytes(entry.packedSize)}</td><td>{formatRatio(entry)}</td><td>{entry.modified ?? "—"}</td><td>{entry.encrypted ? "Yes" : "No"}</td>
+          </tr>)}{entries?.total === 0 && <tr><td colSpan={7} className="no-results">No entries match this view.</td></tr>}</tbody></table></div>
+        <footer className="status-bar"><span aria-live="polite">{status}</span><div className="page-controls"><span>{selected.size ? `${selected.size.toLocaleString()} selected · ${formatBytes(selectedSize)} · ` : ""}{entries ? `${entries.total.toLocaleString()} items · Page ${entries.page} of ${entries.totalPages}` : "Loading…"}</span><button aria-label="Previous page" onClick={() => setPageNumber((value) => Math.max(1, value - 1))} disabled={!entries || entries.page <= 1}>‹</button><button aria-label="Next page" onClick={() => setPageNumber((value) => value + 1)} disabled={!entries || entries.page >= entries.totalPages}>›</button></div></footer>
+      </section> : <section className="empty-state"><div className="empty-icon" aria-hidden="true">▦</div><h2>Open or create an archive</h2><p>Browse and create ZIP or 7z archives locally without uploading anything. You can also drop files here.</p><div className="header-actions"><button onClick={openCreateDialog} disabled={busy}>New Archive…</button><button onClick={chooseArchive} disabled={busy}>Choose Archive…</button></div><span role="status">{status}</span></section>}
+
+      {entryMenu && <div className="context-menu" role="menu" style={{ left: entryMenu.x, top: entryMenu.y }} onClick={(event) => event.stopPropagation()}>{entryMenu.entry.isDirectory && <button role="menuitem" onClick={() => { const path = entryMenu.entry.path; setEntryMenu(null); navigateFolder(path); }}>Open Folder</button>}<button role="menuitem" onClick={() => { const path = entryMenu.entry.path; setEntryMenu(null); void requestExtraction([path]); }}>Extract {entryMenu.entry.isDirectory ? "Folder" : "File"}…</button><button role="menuitem" onClick={() => { const path = entryMenu.entry.path; setEntryMenu(null); void copyPaths([path]); }}>Copy Path</button><button role="menuitem" onClick={() => { setPropertiesEntry(entryMenu.entry); setEntryMenu(null); }}>Properties</button></div>}
+      {propertiesEntry && <PropertiesDialog entry={propertiesEntry} onClose={() => setPropertiesEntry(null)} />}
+      {extractDialog && <Modal className="extract-dialog" labelledBy="extract-title" onClose={() => setExtractDialog(null)}><form className="modal-form" onSubmit={submitExtraction}><h2 id="extract-title">Extract {extractDialog.entries.length ? `${extractDialog.entries.length} selected` : "all entries"}</h2>{conflictMessage && <p className="inline-error" role="alert">{conflictMessage}</p>}<label>Destination<div className="output-picker"><input readOnly value={extractDialog.destination} /><button type="button" onClick={changeExtractFolder}>Choose…</button></div></label><label>Existing files<select value={conflictPolicy} onChange={(event) => setConflictPolicy(event.target.value as ConflictPolicy)}><option value="ask">Ask before changing</option><option value="replace">Replace files</option><option value="skip">Skip files</option><option value="keepBoth">Keep both</option></select></label><label className="checkbox-label"><input type="checkbox" checked={revealExtraction} onChange={(event) => setRevealExtraction(event.target.checked)} />Open destination after extraction</label><p>Folder structure is preserved. Existing files follow the policy above.</p><div className="modal-actions"><button type="button" onClick={() => setExtractDialog(null)}>Cancel</button><button className="primary-button" type="submit">Extract {extractDialog.entries.length || "All"}</button></div></form></Modal>}
+      {passwordAction && <Modal className="password-dialog" labelledBy="password-title" onClose={clearPasswordPrompt}><form className="modal-form" onSubmit={submitPassword}><h2 id="password-title">Archive password</h2><p>Enter the password for {leafName(passwordAction.path)}.</p>{passwordError && <p className="inline-error" role="alert">{passwordError}</p>}<label>Password<input autoFocus type={showPassword ? "text" : "password"} value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="off" /></label><label className="checkbox-label"><input type="checkbox" checked={showPassword} onChange={(event) => setShowPassword(event.target.checked)} />Show password</label><div className="modal-actions"><button type="button" onClick={clearPasswordPrompt}>Cancel</button><button className="primary-button" type="submit" disabled={!password || busy}>Continue</button></div></form></Modal>}
+      {createOpen && <Modal className="create-dialog" labelledBy="create-title" onClose={() => setCreateOpen(false)}><form className="modal-form" onSubmit={submitCreate}><h2 id="create-title">New Archive</h2><div className="source-picker"><div><strong>Items</strong><span>{createInputs.length ? `${createInputs.length} selected` : "Drop items here or choose them"}</span></div><div className="header-actions"><button type="button" onClick={addFiles}>Add Files…</button><button type="button" onClick={addFolder}>Add Folder…</button></div></div>{createInputs.length > 0 && <ul className="source-list">{createInputs.map((path) => <li key={path} title={path}><span>{leafName(path)}</span><button type="button" aria-label={`Remove ${leafName(path)}`} onClick={() => setCreateInputs((current) => current.filter((value) => value !== path))}>×</button></li>)}</ul>}<label>Output<div className="output-picker"><input readOnly value={createOutput} placeholder="Choose where to save the archive" /><button type="button" onClick={chooseCreateOutput}>Choose…</button></div></label><div className="form-grid"><label>Format<select value={createFormat} onChange={(event) => { setCreateFormat(event.target.value as ArchiveFormat); setCreateOutput(""); }}><option value="zip">ZIP</option><option value="sevenZip">7z</option></select></label><label>Compression<select value={compression} onChange={(event) => setCompression(event.target.value as CompressionLevel)}><option value="store">Store</option><option value="fast">Fast</option><option value="normal">Normal</option><option value="maximum">Maximum</option></select></label></div><label className="checkbox-label"><input type="checkbox" checked={encrypt} onChange={(event) => setEncrypt(event.target.checked)} />Encrypt archive</label>{encrypt && <div className="form-grid"><label>Password<input type={showCreatePassword ? "text" : "password"} value={createPassword} onChange={(event) => setCreatePassword(event.target.value)} autoComplete="new-password" /></label><label>Confirm password<input type={showCreatePassword ? "text" : "password"} value={createConfirmation} onChange={(event) => setCreateConfirmation(event.target.value)} autoComplete="new-password" /></label><label className="checkbox-label"><input type="checkbox" checked={showCreatePassword} onChange={(event) => setShowCreatePassword(event.target.checked)} />Show passwords</label></div>}{encrypt && createFormat === "zip" && <p className="compatibility-note">ZIP encryption uses AES-256; some older unzip tools may not support it.</p>}<div className="modal-actions"><button type="button" onClick={() => setCreateOpen(false)}>Cancel</button><button className="primary-button" type="submit">Create {createFormat === "zip" ? "ZIP" : "7z"}</button></div></form></Modal>}
+      {settingsOpen && <Modal className="settings-dialog" labelledBy="settings-title" onClose={() => setSettingsOpen(false)}><form className="modal-form" onSubmit={submitSettings}><h2 id="settings-title">Settings</h2><fieldset><legend>Defaults</legend><div className="form-grid"><label>Archive format<select value={settingsDraft.defaultFormat} onChange={(event) => setSettingsDraft({ ...settingsDraft, defaultFormat: event.target.value as ArchiveFormat })}><option value="zip">ZIP</option><option value="sevenZip">7z</option></select></label><label>Compression<select value={settingsDraft.defaultCompression} onChange={(event) => setSettingsDraft({ ...settingsDraft, defaultCompression: event.target.value as CompressionLevel })}><option value="store">Store</option><option value="fast">Fast</option><option value="normal">Normal</option><option value="maximum">Maximum</option></select></label></div><label>Extraction destination<select value={settingsDraft.extractionDestination} onChange={(event) => setSettingsDraft({ ...settingsDraft, extractionDestination: event.target.value as Settings["extractionDestination"] })}><option value="ask">Ask every time</option><option value="sibling">Folder beside archive</option><option value="custom">Custom folder</option></select></label>{settingsDraft.extractionDestination === "custom" && <div className="output-picker"><input readOnly value={settingsDraft.customDestination ?? ""} placeholder="Choose a folder" /><button type="button" onClick={chooseCustomDestination}>Choose…</button></div>}</fieldset><fieldset><legend>Completion and browsing</legend><label className="checkbox-label"><input type="checkbox" checked={settingsDraft.revealOnCompletion} onChange={(event) => setSettingsDraft({ ...settingsDraft, revealOnCompletion: event.target.checked })} />Open destination after extraction</label><label className="checkbox-label"><input type="checkbox" checked={settingsDraft.notifications} onChange={(event) => setSettingsDraft({ ...settingsDraft, notifications: event.target.checked })} />Completion notifications</label><label className="checkbox-label"><input type="checkbox" checked={settingsDraft.showHiddenEntries} onChange={(event) => setSettingsDraft({ ...settingsDraft, showHiddenEntries: event.target.checked })} />Show hidden archive entries</label><label>Maximum declared extraction size<select value={settingsDraft.maxExpandedBytes} onChange={(event) => setSettingsDraft({ ...settingsDraft, maxExpandedBytes: Number(event.target.value) })}><option value={1024 ** 3}>1 GiB</option><option value={10 * 1024 ** 3}>10 GiB</option><option value={100 * 1024 ** 3}>100 GiB</option><option value={1024 ** 4}>1 TiB</option></select></label><label>Concurrent archive jobs<select value={settingsDraft.maxConcurrentJobs} disabled><option value={1}>1 — safest default</option></select></label></fieldset><fieldset><legend>Finder integration</legend><p>{integration?.available && integration.providerRegistered ? `${integration.documentExtensions} archive extensions and ${integration.serviceActions} Finder Services are installed.` : integration ? "Finder integration is unavailable in this build." : "Checking Finder integration…"}</p><p>Service visibility can be enabled or disabled in macOS System Settings → Keyboard → Keyboard Shortcuts → Services.</p><button type="button" onClick={refreshIntegration}>Refresh Status</button></fieldset><fieldset><legend>Privacy and diagnostics</legend><p>Local diagnostics contain app, OS, architecture, engine version, operation, and error codes—never passwords, file contents, or entry lists.</p><div className="header-actions"><button type="button" onClick={exportLocalDiagnostics}>Export Diagnostics…</button><button type="button" className="danger-button" onClick={clearLocalDiagnostics}>Clear Logs…</button></div></fieldset><div className="modal-actions"><button type="button" onClick={restoreSettings}>Reset Defaults</button><span className="modal-spacer" /><button type="button" onClick={() => setSettingsOpen(false)}>Cancel</button><button className="primary-button" type="submit">Save Settings</button></div></form></Modal>}
+    </main>
+  );
+}
+
+function SortableHeader({ label, value, current, descending, onSort }: { label: string; value: SortKey; current: SortKey; descending: boolean; onSort: (value: SortKey) => void }) {
+  const active = current === value;
+  return <th aria-sort={active ? (descending ? "descending" : "ascending") : "none"}><button className="sort-button" onClick={() => onSort(value)}>{label}<span aria-hidden="true">{active ? (descending ? " ↓" : " ↑") : ""}</span></button></th>;
+}
+function PropertiesDialog({ entry, onClose }: { entry: ArchiveEntry; onClose: () => void }) {
+  return <Modal className="properties-dialog" labelledBy="properties-title" onClose={onClose}><h2 id="properties-title">Entry Properties</h2><dl><dt>Path</dt><dd>{entry.path}</dd><dt>Type</dt><dd>{entry.isLink ? "Link" : entry.isDirectory ? "Folder" : "File"}</dd><dt>Size</dt><dd>{entry.size === null ? "Unknown" : formatBytes(entry.size)}</dd><dt>Compressed</dt><dd>{entry.packedSize === null ? "Unknown" : formatBytes(entry.packedSize)}</dd><dt>Ratio</dt><dd>{formatRatio(entry)}</dd><dt>Modified</dt><dd>{entry.modified ?? "Unknown"}</dd><dt>Method</dt><dd>{entry.method ?? "Unknown"}</dd><dt>Encrypted</dt><dd>{entry.encrypted ? "Yes" : "No"}</dd></dl><div className="modal-actions"><button autoFocus onClick={onClose}>Close</button></div></Modal>;
+}
+function isPasswordError(error: ArchiveError) { return error.code === "password_required" || error.code === "wrong_password"; }
+async function notificationPermission() {
+  if (await isPermissionGranted()) return true;
+  return await requestPermission() === "granted";
+}
+function isArchivePath(path: string) { const extension = path.toLowerCase().split(".").pop(); return extension !== undefined && archiveFilters.includes(extension); }
+function entryIconKey(entry: ArchiveEntry) {
+  if (entry.isDirectory) return "__folder__";
+  if (entry.isLink) return "__link__";
+  const extension = entry.path.toLowerCase().split(".").pop() ?? "";
+  return /^[a-z0-9]{1,16}$/.test(extension) ? extension : "__file__";
+}
+function EntryIcon({ entry, source }: { entry: ArchiveEntry; source?: string }) {
+  if (source) return <img className="entry-icon" src={source} alt="" aria-hidden="true" />;
+  const path = entry.isDirectory
+    ? "M2.5 5.5h6l1.5 2h7.5v8.5h-15z"
+    : entry.isLink
+      ? "M7.4 12.6l5.2-5.2m-7.2 7.2l-1 1a2.1 2.1 0 003 3l2.4-2.4a2.1 2.1 0 000-3m4.8-6.8l1-1a2.1 2.1 0 013 3l-2.4 2.4a2.1 2.1 0 01-3 0"
+      : "M4 2.5h7l5 5V17.5H4zM11 2.5v5h5";
+  return <svg className="entry-icon fallback-icon" viewBox="0 0 20 20" aria-hidden="true"><path d={path} /></svg>;
+}
+function leafName(path: string) { const parts = path.split(/[\\/]/).filter(Boolean); return parts[parts.length - 1] ?? path; }
+function parentPath(path: string) { const index = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\")); return index > 0 ? path.slice(0, index) : path; }
+function parentEntryPath(path: string) { const index = path.lastIndexOf("/"); return index < 0 ? "" : path.slice(0, index); }
+function contextMenuPosition(event: React.MouseEvent, entry: ArchiveEntry): EntryMenu {
+  const margin = 8;
+  const width = 190;
+  const height = entry.isDirectory ? 164 : 126;
+  return {
+    entry,
+    x: Math.max(margin, Math.min(event.clientX, window.innerWidth - width - margin)),
+    y: Math.max(margin, Math.min(event.clientY, window.innerHeight - height - margin)),
+  };
+}
+function siblingExtractionPath(path: string, name: string) {
+  const separator = path.includes("\\") ? "\\" : "/";
+  const parent = path.slice(0, Math.max(0, path.lastIndexOf(separator)));
+  const folder = name.replace(/\.(?:tar\.(?:gz|bz2|xz|zst)|tgz|tbz2?|txz|tzst)$/i, "").replace(/\.[^.]+$/, "");
+  return `${parent}${separator}${folder}`;
+}
+function entryLabel(entry: ArchiveEntry) { return [leafName(entry.path), entry.isDirectory ? "folder" : "file", entry.size === null ? "unknown size" : formatBytes(entry.size), entry.encrypted ? "encrypted" : "not encrypted"].join(", "); }
+function capitalize(value: string) { return value.charAt(0).toUpperCase() + value.slice(1); }
+function formatBytes(bytes: number) {
+  if (bytes < 1024) return `${bytes.toLocaleString()} B`;
+  const units = ["KB", "MB", "GB", "TB"];
+  let value = bytes / 1024; let index = 0;
+  while (value >= 1024 && index < units.length - 1) { value /= 1024; index += 1; }
+  return `${value.toFixed(value >= 10 ? 1 : 2)} ${units[index]}`;
+}
+function formatRatio(entry: ArchiveEntry) { return !entry.size || entry.packedSize === null ? "—" : `${Math.round((1 - entry.packedSize / entry.size) * 100)}%`; }
+function formatDuration(milliseconds: number) {
+  if (milliseconds < 1000) return `${milliseconds} ms`;
+  const seconds = Math.floor(milliseconds / 1000);
+  return seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+}
+export default App;
