@@ -1,27 +1,80 @@
-# Archi
+<p align="center">
+  <img src="src-tauri/icons/128x128@2x.png" width="128" height="128" alt="Archi app icon">
+</p>
 
-A local-first archive manager built with Tauri 2, React, TypeScript, Rust, and a bundled 7-Zip 26.02 engine.
+<h1 align="center">Archi</h1>
 
-Public documentation: [Release notes](docs/RELEASE_NOTES.md) · [Privacy](docs/PRIVACY.md) · [Supported formats](docs/SUPPORTED_FORMATS.md) · [Known limitations](docs/KNOWN_LIMITATIONS.md) · [Third-party notices](THIRD_PARTY_NOTICES.md) · [Brand assets](BRAND_ASSETS.md)
+<p align="center">
+  A fast, private archive manager for macOS.
+</p>
 
-Revised Sprint 7 completes the feature MVP: recoverable ZIP/7z add, delete and rename; ZIP comments; ZIP/7z volume sets; private recent-archive history; and per-format compression defaults. Existing safe extraction, encryption, testing, progress, cancellation, macOS document associations, and five Finder Services remain available.
+<p align="center">
+  <a href="https://github.com/gg333/archi/releases/tag/v0.2.0"><strong>Download Archi 0.2.0</strong></a>
+</p>
+
+Archi makes it easy to open, create, inspect, test, modify, and safely extract
+archives without sending your files anywhere. It runs locally and uses the
+bundled 7-Zip 26.02 engine for archive operations.
+
+## Features
+
+- Browse, search, sort, and test archives before extracting them.
+- Extract an entire archive or selected files and folders.
+- Create ZIP and 7z archives, including encrypted archives.
+- Add, delete, and rename entries in ZIP and 7z archives.
+- Create and extract multi-volume ZIP and 7z archives.
+- Read and edit ZIP comments.
+- Resolve file conflicts with Ask, Replace, Skip, or Keep Both.
+- Open completed extraction destinations automatically.
+- Open archives from Finder and use Finder Services for common operations.
+- Cancel long-running operations and monitor progress, speed, and warnings.
+
+## Requirements
+
+- macOS 13 or later
+- Apple Silicon or Intel Mac
+
+Windows and Linux builds are not available yet.
+
+## Install
+
+1. Download `Archi_0.2.0_universal.dmg` from the
+   [v0.2.0 release](https://github.com/gg333/archi/releases/tag/v0.2.0).
+2. Open the DMG and drag **Archi** into **Applications**.
+3. Open Archi from Applications.
+
+The release is signed with an Apple Developer ID and notarized by Apple.
+
+## Supported formats
+
+Archi creates and modifies ZIP and 7z archives. It can browse and extract ZIP,
+7z, RAR/RAR5, TAR, GZIP, BZIP2, XZ, AR, CPIO, and several other formats
+supported by the bundled engine.
+
+RAR support is read-only; Archi does not create or modify RAR archives. See the
+[supported-format matrix](docs/SUPPORTED_FORMATS.md) for operation-level details.
+
+## Privacy and safety
+
+Archive operations run locally. Archi has no accounts, advertising, analytics,
+or usage tracking, and it does not upload archive contents, file names,
+passwords, history, or diagnostics.
+
+Extraction is staged and checked for unsafe paths, links, collisions, and source
+replacement before files are installed in the destination. See the full
+[privacy statement](docs/PRIVACY.md) and [known limitations](docs/KNOWN_LIMITATIONS.md).
+
+## Development
+
+Install Node.js, pnpm, Rust, and the
+[Tauri prerequisites](https://v2.tauri.app/start/prerequisites/), then run:
 
 ```bash
 pnpm install --frozen-lockfile
 pnpm tauri dev
 ```
 
-Create an unsigned local test DMG:
-
-```bash
-pnpm bundle:macos
-```
-
-For a distributable release, install a **Developer ID Application** certificate and set `APPLE_SIGNING_IDENTITY` to its full Keychain identity. Configure notarization with either App Store Connect API-key variables (`APPLE_API_ISSUER`, `APPLE_API_KEY`, and `APPLE_API_KEY_PATH`) or Apple-ID variables (`APPLE_ID`, `APPLE_PASSWORD`, and `APPLE_TEAM_ID`), then run `pnpm release:macos`. The command refuses to create a public release without both a valid signing identity and complete notarization credentials. Tauri signs the app and bundled 7-Zip sidecar with the hardened runtime, submits the DMG for notarization, and staples the accepted ticket.
-
-The DMG is written to `src-tauri/target/release/bundle/dmg/`. Verify it with `codesign --verify --deep --strict --verbose=2`, `spctl --assess --type execute --verbose=4`, and `xcrun stapler validate`.
-
-Validation:
+Run the automated checks with:
 
 ```bash
 pnpm build
@@ -30,4 +83,14 @@ cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets --all-f
 cargo test --locked --manifest-path src-tauri/Cargo.toml
 ```
 
-The current release candidate DMG is Developer-ID signed. A public build is complete only when the DMG also passes Apple notarization, Gatekeeper, stapler, and clean-machine checks.
+## Legal
+
+Archi bundles third-party software, including 7-Zip 26.02. See
+[third-party notices](THIRD_PARTY_NOTICES.md) for licenses and corresponding
+source information.
+
+The Archi name, logo, and application icons are reserved brand assets of
+Nitivar. See the [brand-assets policy](BRAND_ASSETS.md).
+
+Unless a repository `LICENSE` file states otherwise, publication of this source
+code does not grant permission to copy, modify, or redistribute it.
