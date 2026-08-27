@@ -1,52 +1,57 @@
-# Archi 0.2.0 release notes
+# Archi 0.3.0 release notes
 
-**Release status:** Release candidate. Publication remains gated on Apple notarization, stapling, and clean-machine acceptance.
+**Release status:** Production macOS release.
 
-Archi 0.2.0 is the first feature-complete macOS MVP of the local-first archive manager.
+Archi 0.3.0 expands archive creation and adds safe native file previews while preserving the local-first, staged-extraction architecture introduced in 0.2.0.
 
 ## Highlights
 
-- Open, browse, search, sort, test, and safely extract supported archives without extracting them first.
-- Create ZIP and 7z archives from files, folders, mixed selections, and empty folders.
-- Create encrypted ZIP and 7z archives; 7z supports encrypted file names.
-- Extract all entries or only selected files and folders.
-- Safely add, delete, and rename entries in single-volume ZIP and 7z archives.
-- Create and extract ZIP and 7z multi-volume sets.
-- Read and edit UTF-8 ZIP comments.
-- Resolve extraction conflicts with Ask, Replace, Skip, or Keep Both.
-- Show progress, current entry, elapsed time, speed, warnings, and cancellation state.
-- Open the completed extraction destination in Finder.
-- Open archives through file associations and use five Finder Services: Extract Here, Extract to Folder, Test Archive, Compress to ZIP, and Compress with Options.
-- Keep up to ten recent archive paths locally, with controls to disable and clear history.
+- Open a safe regular file from an archive in its normal macOS application without extracting the whole archive.
+- Press Spacebar or choose **Quick Look** to preview supported files with the native macOS Quick Look panel.
+- Create TAR.GZ, TAR.XZ, and TAR.ZST archives.
+- Create GZIP, XZ, and Zstandard single-file streams.
+- Choose all new formats from the New Archive dialog or make one the default in Settings.
+- Configure a temporary-preview size limit from 10 MiB to 1 GiB; the default is 100 MiB.
+- Use the redesigned public website with an authentic app screenshot, mobile navigation, current format matrix, and direct release download.
 
-## Safety and privacy
+## Preview safety and privacy
 
-- Extraction is staged and validated before files are committed to the selected destination.
-- Traversal paths, absolute paths, archive links, unsafe collisions, and source replacement are blocked.
-- Passwords are sent to the bundled engine through standard input, never process arguments or logs.
-- Archive contents, names, passwords, and usage data are not uploaded.
-- The application uses a restrictive Content Security Policy and narrow Tauri permissions.
+- Only a selected regular file is extracted into a random owner-only directory under `~/Library/Caches/com.nitivar.archi/Previews/`.
+- Directories, links, special files, executables, scripts, Mach-O files, and entries above the configured preview limit are blocked.
+- Preview contents never pass through JavaScript or WebView memory.
+- Opening or previewing a file does not modify the archive; changes in the external application are discarded from Archi's perspective.
+- Stale preview directories are removed on startup after approximately 24 hours.
+
+## Existing archive features
+
+- Browse, search, sort, test, and safely extract supported archives.
+- Extract all entries or selected files and folders with Ask, Replace, Skip, or Keep Both conflict handling.
+- Create encrypted ZIP and 7z archives, including encrypted 7z file names.
+- Add, delete, and rename entries in single-volume ZIP and 7z archives.
+- Create and extract ZIP and 7z multi-volume sets and edit UTF-8 ZIP comments.
+- Open completed extraction destinations in Finder and use five Finder Services.
 
 ## Distribution
 
-- Product: Archi 0.2.0
+- Product: Archi 0.3.0
 - Bundle identifier: `com.nitivar.archi`
 - Minimum system: macOS 13
-- Current build architecture: Apple Silicon (`arm64`)
+- Architecture: universal Apple Silicon and Intel
 - Archive engine: official 7-Zip 26.02 universal macOS binary
-- Packaging: Developer-ID-signed DMG with hardened runtime
+- Packaging: Developer-ID-signed, hardened-runtime, notarized, and stapled DMG
 
 See [Supported formats](SUPPORTED_FORMATS.md), [Known limitations](KNOWN_LIMITATIONS.md), [Privacy](PRIVACY.md), and [Third-party notices](../THIRD_PARTY_NOTICES.md).
 
-## Verification completed
+## Verification
 
+- Final artifact: `Archi_0.3.0_universal.dmg`
+- SHA-256: `512792d13aeaee379c12a1b111a53cb6bfeebd0592cc748b181319b196f5de8e`
+- Apple notarization: app submission `0cd8d24c-eafc-4c4d-9d2e-be10dcacb41c` and DMG submission `b6f75f73-cb09-4f20-98c6-752fabebcb4e`, both accepted with no issues
 - TypeScript/Vite production build
 - Rust formatting and strict Clippy
-- 36 Rust unit tests
-- 8 active engine contract tests
-- 10 security tests
-- 100,000-entry listing gate
-- 1,000-operation real-engine stress gate
-- Developer ID signing of Archi, the bundled `7zz`, and the DMG
+- Rust unit, engine-contract, security, 100,000-entry, and 1,000-operation stress tests
+- Universal Mach-O verification for Archi and the bundled `7zz`
+- Deep strict code-signature verification
+- Apple notarization, stapling, and Gatekeeper assessment
 
-Final Gatekeeper, stapler, clean-install, Finder lifecycle, upgrade, and uninstall results will be recorded before publication.
+Clean-machine installation, upgrade, Finder lifecycle, and uninstall checks remain part of the manual release checklist and are not claimed by the automated verification summary.

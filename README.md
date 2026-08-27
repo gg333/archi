@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/gg333/archi/releases/tag/v0.2.0"><strong>Download Archi 0.2.0</strong></a>
+  <a href="https://github.com/gg333/archi/releases/tag/v0.3.0"><strong>Download Archi 0.3.0</strong></a>
 </p>
 
 Archi makes it easy to open, create, inspect, test, modify, and safely extract
@@ -19,8 +19,10 @@ bundled 7-Zip 26.02 engine for archive operations.
 ## Features
 
 - Browse, search, sort, and test archives before extracting them.
+- Open a safe archived file in its normal Mac application, or press Spacebar for Quick Look.
 - Extract an entire archive or selected files and folders.
-- Create ZIP and 7z archives, including encrypted archives.
+- Create ZIP, 7z, TAR.GZ, TAR.XZ, TAR.ZST, GZIP, XZ, and Zstandard files.
+- Encrypt ZIP and 7z archives with AES-256.
 - Add, delete, and rename entries in ZIP and 7z archives.
 - Create and extract multi-volume ZIP and 7z archives.
 - Read and edit ZIP comments.
@@ -38,8 +40,8 @@ Windows and Linux builds are not available yet.
 
 ## Install
 
-1. Download `Archi_0.2.0_universal.dmg` from the
-   [v0.2.0 release](https://github.com/gg333/archi/releases/tag/v0.2.0).
+1. Download `Archi_0.3.0_universal.dmg` from the
+   [v0.3.0 release](https://github.com/gg333/archi/releases/tag/v0.3.0).
 2. Open the DMG and drag **Archi** into **Applications**.
 3. Open Archi from Applications.
 
@@ -47,9 +49,10 @@ The release is signed with an Apple Developer ID and notarized by Apple.
 
 ## Supported formats
 
-Archi creates and modifies ZIP and 7z archives. It can browse and extract ZIP,
-7z, RAR/RAR5, TAR, GZIP, BZIP2, XZ, AR, CPIO, and several other formats
-supported by the bundled engine.
+Archi creates ZIP, 7z, TAR.GZ, TAR.XZ, TAR.ZST, GZIP, XZ, and Zstandard files.
+It can browse and extract ZIP, 7z, RAR/RAR5, TAR, GZIP, BZIP2, XZ, AR, CPIO,
+and several other formats supported by the bundled engine. Add, delete, rename,
+encryption, and split-volume creation remain limited to ZIP and 7z.
 
 RAR support is read-only; Archi does not create or modify RAR archives. See the
 [supported-format matrix](docs/SUPPORTED_FORMATS.md) for operation-level details.
