@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Supported formats — Archi</title>
+  <meta name="description" content="Operation-level support matrix for Archi on macOS: ZIP, 7z, RAR, TAR, GZIP and more, powered by the bundled 7-Zip 26.02 engine.">
+  <meta name="color-scheme" content="light dark">
+  <meta name="theme-color" content="#eef1f5" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#17191d" media="(prefers-color-scheme: dark)">
+  <link rel="icon" type="image/png" href="assets/favicon.png">
+  <link rel="canonical" href="https://gg333.github.io/archi/formats.html">
+  <link rel="stylesheet" href="assets/styles.css">
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+
+  <header class="site-header">
+    <div class="container site-header-inner">
+      <a class="brand" href="./index.html">
+        <img class="brand-icon" src="assets/app-icon.png" alt="">
+        <span>Archi</span>
+      </a>
+      <nav class="site-nav" aria-label="Primary">
+        <a href="./index.html#features">Features</a>
+        <a href="./formats.html">Formats</a>
+        <a href="./privacy.html">Privacy</a>
+        <a href="https://github.com/gg333/archi">GitHub</a>
+      </nav>
+      <a class="button button-primary header-download" href="https://github.com/gg333/archi/releases/latest" data-download-link>Download</a>
+    </div>
+  </header>
+
+  <main id="main">
+    <div class="container">
+      <header class="doc-header">
+        <a class="doc-back" href="./index.html">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="15 18 9 12 15 6"/></svg>
+          Back to the Archi site
+        </a>
+        <h1>Supported formats</h1>
+      </header>
+
+      <article class="doc-body">
+        <p>
+          This matrix describes Archi 0.2.0 on macOS with the bundled 7-Zip 26.02 engine.
+          <strong>Supported</strong> means the operation is covered by Archi's automated
+          compatibility corpus. <strong>Best effort</strong> means the bundled engine may
+          handle the format, but Archi does not make a release guarantee for it yet.
+        </p>
+
+        <div class="table-wrap">
+          <table class="matrix">
+            <thead>
+              <tr>
+                <th scope="col">Format</th>
+                <th scope="col">Browse</th>
+                <th scope="col">Test / extract</th>
+                <th scope="col">Create</th>
+                <th scope="col">Encryption</th>
+                <th scope="col">Modify</th>
+                <th scope="col">Multi-volume</th>
+                <th scope="col">Comments</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr><td>ZIP</td><td class="yes">Supported</td><td class="yes">Supported</td><td class="yes">Supported</td><td class="yes">Read and AES-256 create</td><td class="yes">Add/delete/rename</td><td class="yes">Create/extract</td><td class="yes">Read/edit UTF-8</td></tr>
+              <tr><td>7z</td><td class="yes">Supported</td><td class="yes">Supported</td><td class="yes">Supported</td><td class="yes">Read and AES-256 create</td><td class="yes">Add/delete/rename</td><td class="yes">Create/extract</td><td class="no">No</td></tr>
+              <tr><td>RAR / RAR5</td><td class="yes">Supported</td><td class="yes">Supported</td><td class="no">No</td><td class="partial">Read when supported by engine</td><td class="no">No</td><td class="partial">Engine-dependent</td><td class="no">No</td></tr>
+              <tr><td>TAR</td><td class="yes">Supported</td><td class="yes">Supported</td><td class="no">No</td><td class="no">No</td><td class="no">No</td><td class="no">No</td><td class="no">No</td></tr>
+              <tr><td>TGZ / TAR.GZ</td><td class="yes">Supported</td><td class="yes">Supported</td><td class="no">No</td><td class="no">No</td><td class="no">No</td><td class="no">No</td><td class="no">No</td></tr>
+              <tr><td>TBZ2 / TAR.BZ2</td><td class="yes">Supported</td><td class="yes">Supported</td><td class="no">No</td><td class="no">No</td><td class="no">No</td><td class="no">No</td><td class="no">No</td></tr>
+              <tr><td>TXZ / TAR.XZ</td><td class="yes">Supported</td><td class="yes">Supported</td><td class="no">No</td><td class="no">No</td><td class="no">No</td><td class="no">No</td><td class="no">No</td></tr>
+              <tr><td>GZIP stream</td><td class="yes">Supported</td><td class="yes">Supported</td><td class="no">No</td><td class="no">No</td><td class="no">No</td><td class="no">No</td><td class="no">No</td></tr>
+              <tr><td>BZIP2 stream</td><td class="yes">Supported</td><td class="yes">Supported</td><td class="no">No</td><td class="no">No</td><td class="no">No</td><td class="no">No</td><td class="no">No</td></tr>
+              <tr><td>XZ stream</td><td class="yes">Supported</td><td class="yes">Supported</td><td class="no">No</td><td class="no">No</td><td class="no">No</td><td class="no">No</td><td class="no">No</td></tr>
+              <tr><td>AR</td><td class="yes">Supported</td><td class="yes">Supported</td><td class="no">No</td><td class="no">No</td><td class="no">No</td><td class="no">No</td><td class="no">No</td></tr>
+              <tr><td>CPIO</td><td class="yes">Supported</td><td class="yes">Supported</td><td class="no">No</td><td class="no">No</td><td class="no">No</td><td class="no">No</td><td class="no">No</td></tr>
+              <tr><td>TAR.ZST / ZSTD</td><td class="partial">Best effort</td><td class="partial">Best effort</td><td class="no">No</td><td class="partial">Engine-dependent</td><td class="no">No</td><td class="no">No</td><td class="no">No</td></tr>
+              <tr><td>CAB</td><td class="partial">Best effort</td><td class="partial">Best effort</td><td class="no">No</td><td class="partial">Engine-dependent</td><td class="no">No</td><td class="no">No</td><td class="no">No</td></tr>
+              <tr><td>ISO</td><td class="partial">Best effort</td><td class="partial">Best effort</td><td class="no">No</td><td class="partial">Engine-dependent</td><td class="no">No</td><td class="no">No</td><td class="no">No</td></tr>
+              <tr><td>LZH / LHA</td><td class="partial">Best effort</td><td class="partial">Best effort</td><td class="no">No</td><td class="partial">Engine-dependent</td><td class="no">No</td><td class="no">No</td><td class="no">No</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h2>Important behavior</h2>
+        <ul>
+          <li>RAR is read-only. Archi does not create or modify RAR archives.</li>
+          <li>Modification is available only for single-volume ZIP and 7z archives.</li>
+          <li>ZIP comments are supported; 7z and multi-volume comments are not exposed.</li>
+          <li>Compound archives and single compressed streams may initially appear as one logical inner file, such as <code>archive.tar</code>. Extract that file and open it separately.</li>
+          <li>Content detection uses signature and engine probing; an incorrect extension can produce a non-blocking format warning.</li>
+          <li>Unsupported compression or encryption methods may prevent an otherwise recognized archive from opening.</li>
+          <li>Encrypted ZIP creation uses AES-256, which some older ZIP utilities cannot read.</li>
+        </ul>
+
+        <p>
+          The internal test evidence is available in
+          <a href="https://github.com/gg333/archi/blob/main/tests/compatibility-matrix.md">the compatibility matrix</a>
+          on GitHub.
+        </p>
+      </article>
+    </div>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container">
+      <div class="footer-legal">
+        <span>© 2026 Nitivar. The Archi name, logo, and icons are reserved brand assets.</span>
+        <span><a href="./index.html">archi site</a> · <a href="https://github.com/gg333/archi">GitHub</a></span>
+      </div>
+    </div>
+  </footer>
+
+  <script src="assets/site.js"></script>
+</body>
+</html>

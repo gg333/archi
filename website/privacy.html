@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Privacy statement — Archi</title>
+  <meta name="description" content="Archi is local-first: no analytics, advertising, tracking, or uploads. Read exactly what Archi stores on your Mac and nothing else.">
+  <meta name="color-scheme" content="light dark">
+  <meta name="theme-color" content="#eef1f5" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#17191d" media="(prefers-color-scheme: dark)">
+  <link rel="icon" type="image/png" href="assets/favicon.png">
+  <link rel="canonical" href="https://gg333.github.io/archi/privacy.html">
+  <link rel="stylesheet" href="assets/styles.css">
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+
+  <header class="site-header">
+    <div class="container site-header-inner">
+      <a class="brand" href="./index.html">
+        <img class="brand-icon" src="assets/app-icon.png" alt="">
+        <span>Archi</span>
+      </a>
+      <nav class="site-nav" aria-label="Primary">
+        <a href="./index.html#features">Features</a>
+        <a href="./formats.html">Formats</a>
+        <a href="./privacy.html">Privacy</a>
+        <a href="https://github.com/gg333/archi">GitHub</a>
+      </nav>
+      <a class="button button-primary header-download" href="https://github.com/gg333/archi/releases/latest" data-download-link>Download</a>
+    </div>
+  </header>
+
+  <main id="main">
+    <div class="container">
+      <header class="doc-header">
+        <a class="doc-back" href="./index.html">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="15 18 9 12 15 6"/></svg>
+          Back to the Archi site
+        </a>
+        <h1>Privacy statement</h1>
+        <p class="doc-meta"><strong>Effective date:</strong> 27 August 2026</p>
+      </header>
+
+      <article class="doc-body">
+        <p>
+          Archi is a local-first archive utility. Archive creation, listing, testing,
+          modification, and extraction run on your Mac using the bundled 7-Zip engine.
+        </p>
+
+        <h2>Data Archi does not collect</h2>
+        <p>
+          Archi does not include analytics, advertising, user tracking, or crash-report
+          uploads. It does not upload:
+        </p>
+        <ul>
+          <li>archive contents;</li>
+          <li>file or archive names;</li>
+          <li>archive passwords;</li>
+          <li>recent archive history;</li>
+          <li>diagnostic logs; or</li>
+          <li>usage statistics.</li>
+        </ul>
+        <p>
+          Archi has no account system and does not require an internet connection for
+          archive operations.
+        </p>
+
+        <h2>Data stored on your Mac</h2>
+        <p>
+          Archi may store the following inside its macOS application configuration
+          directory for your user account:
+        </p>
+        <ul>
+          <li>application settings;</li>
+          <li>up to ten canonical recent-archive paths when history is enabled; and</li>
+          <li>a small rotated diagnostic log.</li>
+        </ul>
+        <p>
+          Recent-history storage is enabled by default. You can disable it or select
+          <strong>Clear History</strong> in Settings. Disabling history deletes the stored
+          recent-archive file.
+        </p>
+        <p>
+          Diagnostics contain only a timestamp, Archi version, operating system,
+          architecture, 7-Zip version, operation category, and sanitized error code. They
+          do not contain passwords, file contents, or archive entry lists. Logs rotate at
+          256&nbsp;KiB and can be exported or deleted explicitly from Settings.
+        </p>
+
+        <h2>Temporary files and Finder requests</h2>
+        <p>
+          Archi uses private temporary staging directories during archive operations so
+          output can be validated before it is installed. Job-owned temporary data is
+          removed after success, failure, or cancellation, and stale Archi-owned staging
+          directories are cleaned on startup.
+        </p>
+        <p>
+          Finder Services pass selections through private, owner-only request files.
+          Requests are validated, consumed once, and deleted before the action is
+          dispatched.
+        </p>
+
+        <h2>Passwords</h2>
+        <p>
+          Passwords are retained only for the active operation, are not saved in settings
+          or history, and are not placed in process arguments or diagnostics. Password
+          memory is cleared when the operation completes where the application controls
+          that memory.
+        </p>
+
+        <h2>Notifications and file access</h2>
+        <p>
+          If you enable completion notifications, macOS controls notification permission
+          and delivery. Archi accesses only files and folders selected through the app,
+          drag-and-drop, file associations, or Finder Services, plus its own configuration
+          and temporary directories.
+        </p>
+
+        <h2>Network access and updates</h2>
+        <p>
+          Archi 0.2.0 does not contain an automatic updater or network-based archive
+          features. Apple may perform its own Gatekeeper and notarization checks when you
+          download or open a signed application; those checks are provided by macOS, not
+          Archi telemetry.
+        </p>
+
+        <h2>Third-party software</h2>
+        <p>
+          Archi bundles 7-Zip 26.02 and other open-source dependencies. Their notices and
+          license materials are documented in the
+          <a href="https://github.com/gg333/archi/blob/main/THIRD_PARTY_NOTICES.md">third-party notices</a>.
+        </p>
+        <p>
+          This statement should be reviewed whenever telemetry, crash reporting, automatic
+          updates, remote files, accounts, or cloud features are introduced.
+        </p>
+      </article>
+    </div>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container">
+      <div class="footer-legal">
+        <span>© 2026 Nitivar. The Archi name, logo, and icons are reserved brand assets.</span>
+        <span><a href="./index.html">archi site</a> · <a href="https://github.com/gg333/archi">GitHub</a></span>
+      </div>
+    </div>
+  </footer>
+
+  <script src="assets/site.js"></script>
+</body>
+</html>
