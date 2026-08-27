@@ -90,12 +90,11 @@ cargo test --locked --manifest-path src-tauri/Cargo.toml
 
 ## Legal
 
+Archi's source code is available under the [MIT License](LICENSE).
+
 Archi bundles third-party software, including 7-Zip 26.02. See
 [third-party notices](THIRD_PARTY_NOTICES.md) for licenses and corresponding
 source information.
 
 The Archi name, logo, and application icons are reserved brand assets of
 Nitivar. See the [brand-assets policy](BRAND_ASSETS.md).
-
-Unless a repository `LICENSE` file states otherwise, publication of this source
-code does not grant permission to copy, modify, or redistribute it.

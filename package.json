@@ -2,6 +2,7 @@
   "name": "archive-app",
   "private": true,
   "version": "0.3.0",
+  "license": "MIT",
   "type": "module",
   "packageManager": "pnpm@11.1.2",
   "scripts": {
