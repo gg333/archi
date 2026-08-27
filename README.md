@@ -9,6 +9,8 @@
 </p>
 
 <p align="center">
+  <a href="https://gg333.github.io/archi/"><strong>Website</strong></a>
+  ·
   <a href="https://github.com/gg333/archi/releases/tag/v0.3.0"><strong>Download Archi 0.3.0</strong></a>
 </p>
 
