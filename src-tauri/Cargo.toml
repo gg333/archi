@@ -30,3 +30,8 @@ tempfile = "=3.27.0"
 unicode-normalization = "=0.1.25"
 zeroize = "=1.9.0"
 zstd = "=0.13.3"
+
+[patch.crates-io]
+# Tauri's GTK3 stack still requires glib 0.18. This local copy backports
+# RUSTSEC-2024-0429 until Tauri can move to glib 0.20 or later.
+glib = { path = "../third_party/patched-crates/glib-0.18.5" }
