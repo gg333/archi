@@ -9,9 +9,11 @@ use crate::{
 use serde::Serialize;
 use std::{
     collections::{HashMap, HashSet},
+    fs,
     path::{Path, PathBuf},
     process::{Command, Stdio},
 };
+use tauri::Manager;
 use zeroize::Zeroizing;
 
 #[derive(Debug, Serialize)]
@@ -128,6 +130,78 @@ pub(crate) async fn start_extract(
 }
 
 #[tauri::command]
+pub(crate) async fn open_archive_entry(
+    app: tauri::AppHandle,
+    jobs: tauri::State<'_, JobManager>,
+    data: tauri::State<'_, LocalData>,
+    path: String,
+    entry: String,
+    password: Option<String>,
+    quick_look: bool,
+) -> Result<(), ArchiveError> {
+    let jobs = jobs.inner().clone();
+    let data = data.inner().clone();
+    let preview_root = preview_root(&app)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let control = jobs.start("extract", 0)?;
+        let password = password.map(Zeroizing::new);
+        let password = password.as_ref().map(|value| value.as_str());
+        let archive_path = PathBuf::from(path);
+        let archive_entries = archive::list_archive(data.engine_path(), &archive_path, password)?;
+        safe_paths::validate_archive_entries(&archive_entries)?;
+        let selected_entry = archive_entries
+            .iter()
+            .find(|candidate| candidate.path == entry)
+            .ok_or_else(|| {
+                ArchiveError::new(
+                    "entry_not_found",
+                    "The archive entry is no longer available",
+                )
+            })?;
+        let preview_limit = data.load()?.preview_limit();
+        safe_paths::validate_preview_entry(selected_entry, preview_limit)?;
+        let selected = validate_selection(vec![entry.clone()], &archive_entries)?;
+        let total = validate_expansion(&selected, &archive_entries, preview_limit, false)?;
+        control.set_total_bytes(total);
+        let staging = StagingDirectory::create()?;
+        jobs::run_extract(
+            &control,
+            data.engine_path(),
+            &archive_path,
+            staging.path(),
+            &selected,
+            password,
+        )?;
+        let preview =
+            safe_paths::persist_preview_file(staging.path(), &entry, &preview_root, preview_limit)?;
+        let launched = if quick_look {
+            #[cfg(target_os = "macos")]
+            {
+                crate::macos_services::quick_look(&preview)
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                Err(ArchiveError::new(
+                    "preview_unsupported",
+                    "Native Quick Look is available only on macOS",
+                ))
+            }
+        } else {
+            platform_open(&preview)
+        };
+        if let Err(error) = launched {
+            if let Some(directory) = preview.parent() {
+                let _ = fs::remove_dir_all(directory);
+            }
+            return Err(error);
+        }
+        Ok(())
+    })
+    .await
+    .map_err(task_error)?
+}
+
+#[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn create_archive(
     jobs: tauri::State<'_, JobManager>,
@@ -157,6 +231,7 @@ pub(crate) async fn create_archive(
                 &inputs.into_iter().map(PathBuf::from).collect::<Vec<_>>(),
                 &output_path,
             )?;
+            format.validate_creation_options(&plan, volume_size, password)?;
             control.set_total_bytes(plan.total_bytes);
             let engine = data.engine_path();
             let working = tempfile::Builder::new()
@@ -168,20 +243,58 @@ pub(crate) async fn create_archive(
                         format!("Could not create archive workspace: {error}"),
                     )
                 })?;
-            let temporary = working.path().join(match format {
-                ArchiveFormat::Zip => "archive.zip",
-                ArchiveFormat::SevenZip => "archive.7z",
-            });
-            jobs::run_create(
-                &control,
-                engine,
-                &temporary,
-                &plan,
-                format,
-                compression,
-                volume_size,
-                password,
-            )?;
+            let temporary = working.path().join(output_path.file_name().ok_or_else(|| {
+                ArchiveError::new("invalid_destination", "Archive output has no file name")
+            })?);
+            match format {
+                ArchiveFormat::TarGzip | ArchiveFormat::TarXz | ArchiveFormat::TarZstd => {
+                    let tar = working.path().join("payload.tar");
+                    jobs::run_create_tar(&control, engine, &tar, &plan, compression)?;
+                    control.set_total_bytes(
+                        fs::metadata(&tar)
+                            .map_err(|error| {
+                                ArchiveError::new(
+                                    "creation_failed",
+                                    format!("Could not inspect staged TAR: {error}"),
+                                )
+                            })?
+                            .len(),
+                    );
+                    if format == ArchiveFormat::TarZstd {
+                        jobs::run_zstd(&control, &tar, &temporary, compression)?;
+                    } else {
+                        jobs::run_compress_stream(
+                            &control,
+                            engine,
+                            &temporary,
+                            &tar,
+                            format,
+                            compression,
+                        )?;
+                    }
+                }
+                ArchiveFormat::Zstd => {
+                    let source = plan.single_file().ok_or_else(|| {
+                        ArchiveError::new(
+                            "stream_requires_file",
+                            "Zstandard streams require exactly one regular file",
+                        )
+                    })?;
+                    jobs::run_zstd(&control, &source, &temporary, compression)?;
+                }
+                _ => {
+                    jobs::run_create(
+                        &control,
+                        engine,
+                        &temporary,
+                        &plan,
+                        format,
+                        compression,
+                        volume_size,
+                        password,
+                    )?;
+                }
+            }
             let generated = archive::generated_archive_paths(&temporary, volume_size)?;
             let first_volume = generated[0].clone();
             archive::test_archive(engine, &first_volume, password)?;
@@ -893,6 +1006,19 @@ fn validate_expansion(
     Ok(total)
 }
 
+fn preview_root(app: &tauri::AppHandle) -> Result<PathBuf, ArchiveError> {
+    Ok(app
+        .path()
+        .app_cache_dir()
+        .map_err(|error| {
+            ArchiveError::new(
+                "preview_unavailable",
+                format!("Could not locate the preview cache: {error}"),
+            )
+        })?
+        .join("Previews"))
+}
+
 fn platform_open(path: &Path) -> Result<(), ArchiveError> {
     #[cfg(target_os = "macos")]
     let mut command = Command::new("open");
@@ -909,8 +1035,8 @@ fn platform_open(path: &Path) -> Result<(), ArchiveError> {
         .spawn()
         .map_err(|error| {
             ArchiveError::new(
-                "open_destination_failed",
-                format!("Could not open the extraction destination: {error}"),
+                "open_failed",
+                format!("Could not open the requested item: {error}"),
             )
         })?;
     Ok(())

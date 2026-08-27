@@ -1,6 +1,6 @@
 [package]
 name = "archive-app"
-version = "0.2.0"
+version = "0.3.0"
 description = "A local-first cross-platform archive manager"
 authors = ["Nitivar"]
 edition = "2021"
@@ -28,3 +28,4 @@ serde_json = "=1.0.151"
 tempfile = "=3.27.0"
 unicode-normalization = "=0.1.25"
 zeroize = "=1.9.0"
+zstd = "=0.13.3"

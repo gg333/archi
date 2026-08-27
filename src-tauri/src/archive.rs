@@ -15,26 +15,33 @@ pub const PINNED_ENGINE_VERSION: &str = "26.02";
 pub enum ArchiveFormat {
     Zip,
     SevenZip,
+    TarGzip,
+    TarXz,
+    TarZstd,
+    Gzip,
+    Xz,
+    Zstd,
 }
 
 impl ArchiveFormat {
-    fn switch(self) -> &'static str {
+    fn switch(self) -> Option<&'static str> {
         match self {
-            Self::Zip => "-tzip",
-            Self::SevenZip => "-t7z",
+            Self::Zip => Some("-tzip"),
+            Self::SevenZip => Some("-t7z"),
+            Self::Gzip => Some("-tgzip"),
+            Self::Xz => Some("-txz"),
+            Self::TarGzip | Self::TarXz | Self::TarZstd | Self::Zstd => None,
         }
     }
 
     pub(crate) fn validate_output(self, output: &Path) -> Result<(), ArchiveError> {
-        let expected = match self {
-            Self::Zip => "zip",
-            Self::SevenZip => "7z",
-        };
-        if output
-            .extension()
+        let expected = self.extension();
+        let name = output
+            .file_name()
             .and_then(|value| value.to_str())
-            .is_some_and(|value| value.eq_ignore_ascii_case(expected))
-        {
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        if name.ends_with(&format!(".{expected}")) {
             Ok(())
         } else {
             Err(ArchiveError::new(
@@ -42,6 +49,56 @@ impl ArchiveFormat {
                 format!("The selected format requires a .{expected} output file"),
             ))
         }
+    }
+
+    pub(crate) const fn extension(self) -> &'static str {
+        match self {
+            Self::Zip => "zip",
+            Self::SevenZip => "7z",
+            Self::TarGzip => "tar.gz",
+            Self::TarXz => "tar.xz",
+            Self::TarZstd => "tar.zst",
+            Self::Gzip => "gz",
+            Self::Xz => "xz",
+            Self::Zstd => "zst",
+        }
+    }
+
+    pub(crate) const fn is_tarball(self) -> bool {
+        matches!(self, Self::TarGzip | Self::TarXz | Self::TarZstd)
+    }
+
+    pub(crate) const fn is_stream(self) -> bool {
+        matches!(self, Self::Gzip | Self::Xz | Self::Zstd)
+    }
+
+    pub(crate) fn validate_creation_options(
+        self,
+        plan: &CreationPlan,
+        volume_size: Option<u64>,
+        password: Option<&str>,
+    ) -> Result<(), ArchiveError> {
+        if self.is_stream() && plan.single_file().is_none() {
+            return Err(ArchiveError::new(
+                "stream_requires_file",
+                "GZIP, XZ, and Zstandard streams require exactly one regular file",
+            ));
+        }
+        if !matches!(self, Self::Zip | Self::SevenZip)
+            && password.is_some_and(|value| !value.is_empty())
+        {
+            return Err(ArchiveError::new(
+                "encryption_unsupported",
+                "Encryption is available only for ZIP and 7z creation",
+            ));
+        }
+        if !matches!(self, Self::Zip | Self::SevenZip) && volume_size.is_some() {
+            return Err(ArchiveError::new(
+                "volumes_unsupported",
+                "Split volumes are available only for ZIP and 7z creation",
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -63,6 +120,15 @@ impl CompressionLevel {
             Self::Maximum => "-mx=9",
         }
     }
+
+    fn zstd_level(self) -> i32 {
+        match self {
+            Self::Store => 1,
+            Self::Fast => 3,
+            Self::Normal => 9,
+            Self::Maximum => 19,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -71,7 +137,19 @@ pub struct CreationPlan {
     pub total_bytes: u64,
     pub skipped_links: usize,
     pub(crate) names: Vec<String>,
+    single_file: Option<PathBuf>,
     listfile: tempfile::NamedTempFile,
+}
+
+impl CreationPlan {
+    pub(crate) fn single_file(&self) -> Option<PathBuf> {
+        self.single_file
+            .as_ref()
+            .filter(|path| {
+                fs::symlink_metadata(path).is_ok_and(|metadata| metadata.file_type().is_file())
+            })
+            .cloned()
+    }
 }
 
 #[derive(Debug)]
@@ -335,6 +413,8 @@ fn prepare_inputs(
         ));
     }
 
+    let single_file = (selected.len() == 1 && selected[0].is_file()).then(|| selected[0].clone());
+
     let mut names = Vec::new();
     let mut total_bytes = 0u64;
     for path in selected {
@@ -373,6 +453,7 @@ fn prepare_inputs(
         total_bytes,
         skipped_links,
         names,
+        single_file,
         listfile,
     })
 }
@@ -385,14 +466,51 @@ pub fn create_archive(
     compression: CompressionLevel,
     volume_size: Option<u64>,
     password: Option<&str>,
-) -> Result<Output, ArchiveError> {
+) -> Result<(), ArchiveError> {
+    format.validate_output(archive)?;
     validate_volume_size(volume_size)?;
-    run(
-        binary,
-        &create_args(archive, plan, format, compression, volume_size, password),
-        password,
-        Some(&plan.root),
-    )
+    format.validate_creation_options(plan, volume_size, password)?;
+    if format.is_tarball() {
+        let workspace = tempfile::tempdir().map_err(|error| {
+            ArchiveError::new(
+                "staging_failed",
+                format!("Could not create archive workspace: {error}"),
+            )
+        })?;
+        let tar = workspace.path().join("payload.tar");
+        run(
+            binary,
+            &tar_args(&tar, plan, compression),
+            None,
+            Some(&plan.root),
+        )?;
+        if format == ArchiveFormat::TarZstd {
+            encode_zstd(&tar, archive, compression, |_| Ok(()))?;
+        } else {
+            run(
+                binary,
+                &stream_args(archive, &tar, format, compression)?,
+                None,
+                None,
+            )?;
+        }
+    } else if format == ArchiveFormat::Zstd {
+        let source = plan.single_file().ok_or_else(|| {
+            ArchiveError::new(
+                "stream_requires_file",
+                "Zstandard streams require exactly one regular file",
+            )
+        })?;
+        encode_zstd(&source, archive, compression, |_| Ok(()))?;
+    } else {
+        run(
+            binary,
+            &create_args(archive, plan, format, compression, volume_size, password)?,
+            password,
+            Some(&plan.root),
+        )?;
+    }
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)] // The arguments map directly to one 7-Zip process.
@@ -407,14 +525,106 @@ pub(crate) fn spawn_create(
     output: (Stdio, Stdio),
 ) -> Result<Child, ArchiveError> {
     validate_volume_size(volume_size)?;
+    format.validate_creation_options(plan, volume_size, password)?;
     spawn_command(
         binary,
-        &create_args(archive, plan, format, compression, volume_size, password),
+        &create_args(archive, plan, format, compression, volume_size, password)?,
         password,
         Some(&plan.root),
         output.0,
         output.1,
     )
+}
+
+pub(crate) fn spawn_create_tar(
+    binary: &Path,
+    archive: &Path,
+    plan: &CreationPlan,
+    compression: CompressionLevel,
+    output: (Stdio, Stdio),
+) -> Result<Child, ArchiveError> {
+    spawn_command(
+        binary,
+        &tar_args(archive, plan, compression),
+        None,
+        Some(&plan.root),
+        output.0,
+        output.1,
+    )
+}
+
+pub(crate) fn spawn_compress_stream(
+    binary: &Path,
+    archive: &Path,
+    source: &Path,
+    format: ArchiveFormat,
+    compression: CompressionLevel,
+    output: (Stdio, Stdio),
+) -> Result<Child, ArchiveError> {
+    spawn_command(
+        binary,
+        &stream_args(archive, source, format, compression)?,
+        None,
+        None,
+        output.0,
+        output.1,
+    )
+}
+
+pub(crate) fn encode_zstd(
+    source: &Path,
+    destination: &Path,
+    compression: CompressionLevel,
+    mut progress: impl FnMut(u64) -> Result<(), ArchiveError>,
+) -> Result<(), ArchiveError> {
+    let mut input = File::open(source).map_err(|error| {
+        ArchiveError::new(
+            "invalid_source",
+            format!("Could not open {}: {error}", source.display()),
+        )
+    })?;
+    let output = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(destination)
+        .map_err(|error| {
+            ArchiveError::new(
+                "creation_failed",
+                format!("Could not create {}: {error}", destination.display()),
+            )
+        })?;
+    let mut encoder =
+        zstd::stream::Encoder::new(output, compression.zstd_level()).map_err(|error| {
+            ArchiveError::new(
+                "creation_failed",
+                format!("Could not start Zstandard: {error}"),
+            )
+        })?;
+    let mut buffer = [0u8; 128 * 1024];
+    let mut processed = 0u64;
+    loop {
+        let count = input.read(&mut buffer).map_err(|error| {
+            ArchiveError::new("creation_failed", format!("Could not read input: {error}"))
+        })?;
+        if count == 0 {
+            break;
+        }
+        encoder.write_all(&buffer[..count]).map_err(|error| {
+            ArchiveError::new(
+                "creation_failed",
+                format!("Could not write Zstandard stream: {error}"),
+            )
+        })?;
+        processed = processed.saturating_add(count as u64);
+        progress(processed)?;
+    }
+    encoder.finish().map_err(|error| {
+        ArchiveError::new(
+            "creation_failed",
+            format!("Could not finish Zstandard stream: {error}"),
+        )
+    })?;
+    Ok(())
 }
 
 pub fn extract_archive(
@@ -844,10 +1054,16 @@ fn create_args(
     compression: CompressionLevel,
     volume_size: Option<u64>,
     password: Option<&str>,
-) -> Vec<OsString> {
+) -> Result<Vec<OsString>, ArchiveError> {
+    let format_switch = format.switch().ok_or_else(|| {
+        ArchiveError::new(
+            "invalid_format",
+            "This format requires the staged stream creation path",
+        )
+    })?;
     let mut args = vec![
         "a".into(),
-        format.switch().into(),
+        format_switch.into(),
         compression.switch().into(),
         "-bsp1".into(),
         "-bb1".into(),
@@ -863,11 +1079,61 @@ fn create_args(
         match format {
             ArchiveFormat::Zip => args.push("-mem=AES256".into()),
             ArchiveFormat::SevenZip => args.push("-mhe=on".into()),
+            _ => {
+                return Err(ArchiveError::new(
+                    "encryption_unsupported",
+                    "Encryption is available only for ZIP and 7z creation",
+                ));
+            }
         }
     }
     args.push("--".into());
     args.push(archive.as_os_str().to_owned());
-    args
+    Ok(args)
+}
+
+fn tar_args(archive: &Path, plan: &CreationPlan, compression: CompressionLevel) -> Vec<OsString> {
+    vec![
+        "a".into(),
+        "-ttar".into(),
+        compression.switch().into(),
+        "-bsp1".into(),
+        "-bb1".into(),
+        "-y".into(),
+        "-scsUTF-8".into(),
+        format!("-i@{}", plan.listfile.path().display()).into(),
+        "--".into(),
+        archive.as_os_str().to_owned(),
+    ]
+}
+
+fn stream_args(
+    archive: &Path,
+    source: &Path,
+    format: ArchiveFormat,
+    compression: CompressionLevel,
+) -> Result<Vec<OsString>, ArchiveError> {
+    let switch = match format {
+        ArchiveFormat::TarGzip | ArchiveFormat::Gzip => "-tgzip",
+        ArchiveFormat::TarXz | ArchiveFormat::Xz => "-txz",
+        _ => {
+            return Err(ArchiveError::new(
+                "invalid_format",
+                "This stream format is not handled by 7-Zip",
+            ));
+        }
+    };
+    Ok(vec![
+        "a".into(),
+        switch.into(),
+        compression.switch().into(),
+        "-bsp1".into(),
+        "-bb1".into(),
+        "-y".into(),
+        "--".into(),
+        archive.as_os_str().to_owned(),
+        source.as_os_str().to_owned(),
+    ])
 }
 
 pub(crate) fn validate_volume_size(volume_size: Option<u64>) -> Result<(), ArchiveError> {
@@ -1367,7 +1633,7 @@ mod tests {
 
         let engine = bundled_engine().unwrap();
         let plan = prepare_creation(&[source.join("hello = नमस्ते.txt")], &archive).unwrap();
-        let create_output = create_archive(
+        create_archive(
             &engine,
             &archive,
             &plan,
@@ -1377,8 +1643,6 @@ mod tests {
             Some("sprint1-password"),
         )
         .unwrap();
-        assert!(!String::from_utf8_lossy(&create_output.stdout).contains("sprint1-password"));
-        assert!(!String::from_utf8_lossy(&create_output.stderr).contains("sprint1-password"));
         let entries = list_archive(&engine, &archive, Some("sprint1-password")).unwrap();
         assert_eq!(entries[0].path, "hello = नमस्ते.txt");
         test_archive(&engine, &archive, Some("sprint1-password")).unwrap();
@@ -1548,9 +1812,20 @@ mod tests {
 
     #[test]
     fn archive_format_requires_matching_output_extension() {
-        ArchiveFormat::Zip
-            .validate_output(Path::new("/tmp/archive.ZIP"))
-            .unwrap();
+        for (name, format) in [
+            ("archive.ZIP", ArchiveFormat::Zip),
+            ("archive.7z", ArchiveFormat::SevenZip),
+            ("archive.tar.gz", ArchiveFormat::TarGzip),
+            ("archive.tar.xz", ArchiveFormat::TarXz),
+            ("archive.tar.zst", ArchiveFormat::TarZstd),
+            ("archive.gz", ArchiveFormat::Gzip),
+            ("archive.xz", ArchiveFormat::Xz),
+            ("archive.zst", ArchiveFormat::Zstd),
+        ] {
+            format
+                .validate_output(Path::new("/tmp").join(name).as_path())
+                .unwrap();
+        }
         assert_eq!(
             ArchiveFormat::SevenZip
                 .validate_output(Path::new("/tmp/archive.zip"))
@@ -1558,6 +1833,38 @@ mod tests {
                 .code,
             "extension_mismatch"
         );
+    }
+
+    #[test]
+    fn stream_creation_rejects_folders_encryption_and_volumes() {
+        let root = scratch("stream-options");
+        let folder = root.join("folder");
+        let output = root.join("output.gz");
+        fs::create_dir(&folder).unwrap();
+        fs::write(folder.join("file.txt"), "content").unwrap();
+        let plan = prepare_creation(std::slice::from_ref(&folder), &output).unwrap();
+        assert_eq!(
+            ArchiveFormat::Gzip
+                .validate_creation_options(&plan, None, None)
+                .unwrap_err()
+                .code,
+            "stream_requires_file"
+        );
+        assert_eq!(
+            ArchiveFormat::TarGzip
+                .validate_creation_options(&plan, None, Some("secret"))
+                .unwrap_err()
+                .code,
+            "encryption_unsupported"
+        );
+        assert_eq!(
+            ArchiveFormat::TarGzip
+                .validate_creation_options(&plan, Some(1024), None)
+                .unwrap_err()
+                .code,
+            "volumes_unsupported"
+        );
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

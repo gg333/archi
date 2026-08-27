@@ -194,6 +194,27 @@ impl JobControl {
         }
     }
 
+    fn prepare_stage(&self) {
+        self.phase.store(STARTING, Ordering::SeqCst);
+        if let Ok(mut progress) = self.progress.lock() {
+            progress.percent = 0;
+            progress.current_entry = None;
+        }
+    }
+
+    fn update_processed(&self, processed: u64) -> Result<(), ArchiveError> {
+        if self.cancelled() {
+            return Err(cancelled_error());
+        }
+        let mut progress = self.progress.lock().map_err(lock_error)?;
+        progress.percent = processed
+            .saturating_mul(100)
+            .checked_div(progress.total_bytes)
+            .unwrap_or(0)
+            .min(99) as u8;
+        Ok(())
+    }
+
     fn install(&self, mut child: Child) -> Result<(), ArchiveError> {
         let mut slot = self.child.lock().map_err(lock_error)?;
         if self.cancelled() {
@@ -337,6 +358,56 @@ pub(crate) fn run_create(
     })
 }
 
+pub(crate) fn run_create_tar(
+    control: &Arc<JobControl>,
+    binary: &Path,
+    archive_path: &Path,
+    plan: &CreationPlan,
+    compression: CompressionLevel,
+) -> Result<JobOutcome, ArchiveError> {
+    run_worker(control, |stdout, stderr| {
+        archive::spawn_create_tar(binary, archive_path, plan, compression, (stdout, stderr))
+    })
+}
+
+pub(crate) fn run_compress_stream(
+    control: &Arc<JobControl>,
+    binary: &Path,
+    archive_path: &Path,
+    source: &Path,
+    format: ArchiveFormat,
+    compression: CompressionLevel,
+) -> Result<JobOutcome, ArchiveError> {
+    run_worker(control, |stdout, stderr| {
+        archive::spawn_compress_stream(
+            binary,
+            archive_path,
+            source,
+            format,
+            compression,
+            (stdout, stderr),
+        )
+    })
+}
+
+pub(crate) fn run_zstd(
+    control: &Arc<JobControl>,
+    source: &Path,
+    archive_path: &Path,
+    compression: CompressionLevel,
+) -> Result<JobOutcome, ArchiveError> {
+    control.prepare_stage();
+    if control.cancelled() {
+        return Err(cancelled_error());
+    }
+    control.phase.store(RUNNING, Ordering::SeqCst);
+    archive::encode_zstd(source, archive_path, compression, |processed| {
+        control.update_processed(processed)
+    })?;
+    control.phase.store(COMMITTING, Ordering::SeqCst);
+    control.complete_output("", "")
+}
+
 pub(crate) fn run_test(
     control: &Arc<JobControl>,
     binary: &Path,
@@ -376,6 +447,7 @@ fn run_worker(
     control: &Arc<JobControl>,
     spawn: impl FnOnce(Stdio, Stdio) -> Result<Child, ArchiveError>,
 ) -> Result<JobOutcome, ArchiveError> {
+    control.prepare_stage();
     if control.cancelled() {
         return Err(cancelled_error());
     }

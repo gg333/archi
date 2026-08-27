@@ -8,7 +8,7 @@ import { isPermissionGranted, requestPermission, sendNotification } from "@tauri
 import {
   addToArchive, archiveChanged, archiveError, cancelJob, clearDiagnostics, clearRecentArchives,
   createArchive, defaultZipOutput, deleteArchiveEntries, entryIcons, entryPage, exportDiagnostics,
-  extractArchive, getSettings, jobStatus, openArchive, openDestination, recentArchives,
+  extractArchive, getSettings, jobStatus, openArchive, openArchiveEntry, openDestination, recentArchives,
   recordDiagnostic, renameArchiveEntry, resetSettings, saveSettings, setArchiveComment,
   shellIntegrationStatus, takeShellRequests, testArchive,
 } from "./api";
@@ -26,6 +26,16 @@ const archiveFilters = [
   "zip", "7z", "rar", "tar", "gz", "tgz", "bz2", "tbz2", "xz", "txz",
   "zst", "cab", "iso", "lzh", "lha", "ar", "cpio", "001",
 ];
+const createFormats: { value: ArchiveFormat; label: string; extension: string }[] = [
+  { value: "zip", label: "ZIP", extension: "zip" },
+  { value: "sevenZip", label: "7z", extension: "7z" },
+  { value: "tarGzip", label: "TAR.GZ", extension: "tar.gz" },
+  { value: "tarXz", label: "TAR.XZ", extension: "tar.xz" },
+  { value: "tarZstd", label: "TAR.ZST", extension: "tar.zst" },
+  { value: "gzip", label: "GZIP stream", extension: "gz" },
+  { value: "xz", label: "XZ stream", extension: "xz" },
+  { value: "zstd", label: "Zstandard stream", extension: "zst" },
+];
 const defaultSettings: Settings = {
   version: 1,
   defaultFormat: "zip",
@@ -39,12 +49,14 @@ const defaultSettings: Settings = {
   showHiddenEntries: false,
   historyEnabled: true,
   maxExpandedBytes: 10 * 1024 ** 3,
+  maxPreviewBytes: 100 * 1024 ** 2,
   maxConcurrentJobs: 1,
 };
 
 type Operation = "opening" | "extracting" | "creating" | "testing" | "modifying" | null;
 type PasswordAction =
   | { kind: "open"; path: string }
+  | { kind: "entry"; path: string; entry: string; quickLook: boolean }
   | { kind: "extract"; path: string; destination: string; entries: string[]; reveal: boolean; conflictPolicy?: ConflictPolicy }
   | { kind: "test"; path: string }
   | { kind: "add"; path: string; inputs: string[]; compression: CompressionLevel }
@@ -245,6 +257,7 @@ function App() {
 
   useEffect(() => {
     const shortcut = (event: KeyboardEvent) => {
+      if (event.defaultPrevented) return;
       const modifier = event.metaKey || event.ctrlKey;
       if (event.key === "Escape") {
         if (entryMenu) setEntryMenu(null);
@@ -259,7 +272,13 @@ function App() {
         else if (job?.cancellable) void requestCancellation();
         return;
       }
-      if (!modifier || aboutOpen || passwordAction || createOpen || settingsOpen || extractDialog || renameDialog || commentOpen) return;
+      const dialogOpen = aboutOpen || propertiesEntry || passwordAction || createOpen || settingsOpen || extractDialog || renameDialog || commentOpen;
+      if (event.key === " " && !modifier && archive && !busy && !dialogOpen && selectedEntries.length === 1 && !selectedEntries[0].isDirectory && !isTypingTarget(event.target)) {
+        event.preventDefault();
+        void requestEntryOpen(selectedEntries[0], true);
+        return;
+      }
+      if (!modifier || dialogOpen) return;
       const key = event.key.toLowerCase();
       if (key === "o") { event.preventDefault(); void chooseArchive(); }
       else if (key === "n") { event.preventDefault(); openCreateDialog(); }
@@ -276,7 +295,7 @@ function App() {
     };
     window.addEventListener("keydown", shortcut);
     return () => window.removeEventListener("keydown", shortcut);
-  }, [aboutOpen, archive, commentOpen, createOpen, entries, entryMenu, extractDialog, job, passwordAction, propertiesEntry, renameDialog, selected, selectedEntries, settingsOpen]);
+  }, [aboutOpen, archive, busy, commentOpen, createOpen, entries, entryMenu, extractDialog, job, passwordAction, propertiesEntry, renameDialog, selected, selectedEntries, settingsOpen]);
 
   async function chooseArchive() {
     const path = await open({ multiple: false, directory: false, title: "Open Archive", filters: [{ name: "Archives", extensions: archiveFilters }] });
@@ -423,6 +442,34 @@ function App() {
     if (!destination) return;
     setRevealExtraction(settings.revealOnCompletion);
     setExtractDialog({ entries: paths, destination });
+  }
+
+  async function requestEntryOpen(entry: ArchiveEntry, quickLook: boolean, suppliedPassword?: string): Promise<boolean> {
+    if (!archive || busy) return false;
+    if (entry.isDirectory) {
+      navigateFolder(entry.path);
+      return true;
+    }
+    setOperation("opening"); setError(null);
+    setStatus(quickLook ? `Preparing Quick Look for ${leafName(entry.path)}…` : `Opening ${leafName(entry.path)}…`);
+    try {
+      await openArchiveEntry(archive.path, entry.path, quickLook, suppliedPassword);
+      setStatus(quickLook ? `Previewing ${leafName(entry.path)}.` : `Opened a temporary read-only copy of ${leafName(entry.path)}.`);
+      clearPasswordPrompt(); void recordDiagnostic("open").catch(() => undefined);
+      return true;
+    } catch (caught) {
+      const failure = archiveError(caught);
+      if (isPasswordError(failure)) {
+        setPasswordError(suppliedPassword === undefined ? null : failure.message);
+        setPasswordAction({ kind: "entry", path: archive.path, entry: entry.path, quickLook });
+        setStatus(suppliedPassword === undefined ? "Enter the archive password and try again." : "The password was not accepted. Try again.");
+      } else {
+        setError(failure);
+        setStatus(quickLook ? "Quick Look failed." : "Could not open the archive entry.");
+        clearPasswordPrompt();
+      }
+      return false;
+    } finally { setOperation(null); }
   }
 
   async function chooseExtractFolder(paths: string[]) {
@@ -618,6 +665,14 @@ function App() {
     event.preventDefault();
     if (!passwordAction || !password) return;
     if (passwordAction.kind === "open") await loadArchive(passwordAction.path, password);
+    else if (passwordAction.kind === "entry") {
+      const entry = entries?.entries.find((candidate) => candidate.path === passwordAction.entry);
+      if (entry) await requestEntryOpen(entry, passwordAction.quickLook, password);
+      else {
+        setError({ code: "entry_not_found", message: "The archive entry is no longer visible." });
+        clearPasswordPrompt();
+      }
+    }
     else if (passwordAction.kind === "extract") await runExtraction(passwordAction.path, passwordAction.destination, passwordAction.entries, passwordAction.reveal, password, false, passwordAction.conflictPolicy ?? conflictPolicy);
     else if (passwordAction.kind === "test") await runTest(passwordAction.path, password);
     else if (passwordAction.kind === "add") await runAdditions(passwordAction.path, passwordAction.inputs, passwordAction.compression, password);
@@ -637,14 +692,15 @@ function App() {
     setCreateInputs((current) => [...new Set([...current, ...values])]);
   }
   async function chooseCreateOutput() {
-    const extension = createFormat === "zip" ? "zip" : "7z";
-    const path = await save({ title: "Save Archive", defaultPath: `Archive.${extension}`, filters: [{ name: createFormat === "zip" ? "ZIP Archive" : "7z Archive", extensions: [extension] }] });
+    const option = createFormats.find(({ value }) => value === createFormat)!;
+    const path = await save({ title: "Save Archive", defaultPath: `Archive.${option.extension}`, filters: [{ name: option.label, extensions: [option.extension.split(".").pop()!] }] });
     if (path) setCreateOutput(path);
   }
 
   async function submitCreate(event: React.FormEvent) {
     event.preventDefault();
     if (!createInputs.length || !createOutput) { setError({ code: "missing_create_fields", message: "Choose input items and an output archive." }); return; }
+    if (isStreamFormat(createFormat) && createInputs.length !== 1) { setError({ code: "stream_requires_file", message: "GZIP, XZ, and Zstandard streams require exactly one regular file." }); return; }
     if (encrypt && (!createPassword || createPassword !== createConfirmation)) { setError({ code: "password_mismatch", message: "Enter matching non-empty passwords." }); return; }
     const passwordForJob = encrypt ? createPassword : undefined;
     const confirmationForJob = encrypt ? createConfirmation : undefined;
@@ -751,10 +807,10 @@ function App() {
   }
 
   function handleRowKey(event: React.KeyboardEvent<HTMLTableRowElement>, index: number, entry: ArchiveEntry) {
-    if (event.key === "Enter") { event.preventDefault(); if (entry.isDirectory) navigateFolder(entry.path); else void requestExtraction([entry.path]); }
+    if (event.key === "Enter") { event.preventDefault(); if (entry.isDirectory) navigateFolder(entry.path); else void requestEntryOpen(entry, false); }
     else if (event.key === "Backspace") { event.preventDefault(); goUp(); }
     else if (event.key === " ") {
-      event.preventDefault(); setSelected((current) => { const next = new Set(current); if (next.has(entry.path)) next.delete(entry.path); else next.add(entry.path); return next; });
+      event.preventDefault(); event.stopPropagation(); setSelected(new Set([entry.path])); if (!entry.isDirectory) void requestEntryOpen(entry, true);
     } else if (event.key === "ArrowDown" || event.key === "ArrowUp") {
       event.preventDefault();
       const rows = [...document.querySelectorAll<HTMLTableRowElement>("tbody tr[data-entry]")];
@@ -784,21 +840,21 @@ function App() {
           <label className="search-field"><span className="sr-only">Search entry names</span><input ref={searchRef} type="search" value={query} onChange={(event) => { setQuery(event.target.value); setPageNumber(1); setSelected(new Set()); }} placeholder="Search names" /></label>
         </div>
         <div className="table-wrap"><table><thead><tr><SortableHeader label="Name" value="name" current={sort} descending={descending} onSort={changeSort} /><th>Type</th><SortableHeader label="Size" value="size" current={sort} descending={descending} onSort={changeSort} /><SortableHeader label="Compressed" value="packedSize" current={sort} descending={descending} onSort={changeSort} /><SortableHeader label="Ratio" value="ratio" current={sort} descending={descending} onSort={changeSort} /><SortableHeader label="Modified" value="modified" current={sort} descending={descending} onSort={changeSort} /><th>Encrypted</th></tr></thead>
-          <tbody>{entries?.entries.map((entry, index) => <tr key={entry.path} data-entry={entry.path} tabIndex={index === 0 || selected.has(entry.path) ? 0 : -1} aria-selected={selected.has(entry.path)} aria-label={entryLabel(entry)} className={selected.has(entry.path) ? "selected" : undefined} onClick={(event) => selectEntry(event, entry)} onKeyDown={(event) => handleRowKey(event, index, entry)} onDoubleClick={() => entry.isDirectory ? navigateFolder(entry.path) : void requestExtraction([entry.path])} onContextMenu={(event) => { event.preventDefault(); setSelected(new Set([entry.path])); setEntryMenu(contextMenuPosition(event, entry)); }} title={entry.isDirectory ? "Double-click to open; right-click for actions" : "Double-click or right-click to extract"}>
+          <tbody>{entries?.entries.map((entry, index) => <tr key={entry.path} data-entry={entry.path} tabIndex={index === 0 || selected.has(entry.path) ? 0 : -1} aria-selected={selected.has(entry.path)} aria-label={entryLabel(entry)} className={selected.has(entry.path) ? "selected" : undefined} onClick={(event) => selectEntry(event, entry)} onKeyDown={(event) => handleRowKey(event, index, entry)} onDoubleClick={() => entry.isDirectory ? navigateFolder(entry.path) : void requestEntryOpen(entry, false)} onContextMenu={(event) => { event.preventDefault(); setSelected(new Set([entry.path])); setEntryMenu(contextMenuPosition(event, entry)); }} title={entry.isDirectory ? "Double-click to open; right-click for actions" : "Double-click to open; press Spacebar for Quick Look"}>
             <td className="entry-name" title={entry.path}><EntryIcon entry={entry} source={nativeIcons[entryIconKey(entry)]} />{leafName(entry.path)}{query && parentEntryPath(entry.path) && <small>{parentEntryPath(entry.path)}</small>}</td><td>{entry.isLink ? "Link" : entry.isDirectory ? "Folder" : entry.method ?? "File"}</td><td>{entry.size === null ? "—" : formatBytes(entry.size)}</td><td>{entry.packedSize === null ? "—" : formatBytes(entry.packedSize)}</td><td>{formatRatio(entry)}</td><td>{entry.modified ?? "—"}</td><td>{entry.encrypted ? "Yes" : "No"}</td>
           </tr>)}{entries?.total === 0 && <tr><td colSpan={7} className="no-results">No entries match this view.</td></tr>}</tbody></table></div>
         <footer className="status-bar"><span aria-live="polite">{status}</span><div className="page-controls"><span>{selected.size ? `${selected.size.toLocaleString()} selected · ${formatBytes(selectedSize)} · ` : ""}{entries ? `${entries.total.toLocaleString()} items · Page ${entries.page} of ${entries.totalPages}` : "Loading…"}</span><button aria-label="Previous page" onClick={() => setPageNumber((value) => Math.max(1, value - 1))} disabled={!entries || entries.page <= 1}>‹</button><button aria-label="Next page" onClick={() => setPageNumber((value) => value + 1)} disabled={!entries || entries.page >= entries.totalPages}>›</button></div></footer>
-      </section> : <section className="empty-state"><div className="empty-icon" aria-hidden="true">▦</div><h2>Open or create an archive</h2><p>Browse and create ZIP or 7z archives locally without uploading anything. You can also drop files here.</p><div className="header-actions"><button onClick={openCreateDialog} disabled={busy}>New Archive…</button><button onClick={chooseArchive} disabled={busy}>Choose Archive…</button></div>{settings.historyEnabled && recents.length > 0 && <div className="recent-list"><strong>Recent archives</strong>{recents.map((path) => <button key={path} onClick={() => void loadArchive(path)} title={path}><span>{leafName(path)}</span><small>{parentPath(path)}</small></button>)}</div>}<span role="status">{status}</span></section>}
+      </section> : <section className="empty-state"><div className="empty-icon" aria-hidden="true">▦</div><h2>Open or create an archive</h2><p>Browse and create archives locally without uploading anything. You can also drop files here.</p><div className="header-actions"><button onClick={openCreateDialog} disabled={busy}>New Archive…</button><button onClick={chooseArchive} disabled={busy}>Choose Archive…</button></div>{settings.historyEnabled && recents.length > 0 && <div className="recent-list"><strong>Recent archives</strong>{recents.map((path) => <button key={path} onClick={() => void loadArchive(path)} title={path}><span>{leafName(path)}</span><small>{parentPath(path)}</small></button>)}</div>}<span role="status">{status}</span></section>}
 
-      {entryMenu && <div className="context-menu" role="menu" style={{ left: entryMenu.x, top: entryMenu.y }} onClick={(event) => event.stopPropagation()}>{entryMenu.entry.isDirectory && <button role="menuitem" onClick={() => { const path = entryMenu.entry.path; setEntryMenu(null); navigateFolder(path); }}>Open Folder</button>}<button role="menuitem" onClick={() => { const path = entryMenu.entry.path; setEntryMenu(null); void requestExtraction([path]); }}>Extract {entryMenu.entry.isDirectory ? "Folder" : "File"}…</button>{archive?.canModify && <><button role="menuitem" onClick={() => { const entry = entryMenu.entry; setEntryMenu(null); requestRename(entry); }}>Rename…</button><button className="danger-button" role="menuitem" onClick={() => { const path = entryMenu.entry.path; setEntryMenu(null); void requestDelete([path]); }}>Delete</button></>}<button role="menuitem" onClick={() => { const path = entryMenu.entry.path; setEntryMenu(null); void copyPaths([path]); }}>Copy Path</button><button role="menuitem" onClick={() => { setPropertiesEntry(entryMenu.entry); setEntryMenu(null); }}>Properties</button></div>}
-      {aboutOpen && <Modal className="about-dialog" labelledBy="about-title" onClose={() => setAboutOpen(false)}><div className="about-heading"><img src={appIcon} alt="" /><div><h2 id="about-title">Archi</h2><p>Version {appVersion ?? "0.2.0"}</p></div></div><p>Fast, private archive management for macOS.</p><dl><dt>Archive engine</dt><dd>7-Zip 26.02</dd></dl><p className="about-legal">7-Zip is licensed separately under the GNU LGPL with the unRAR restriction. Full notices and corresponding source are included with Archi.</p><p>© 2026 Nitivar</p><div className="modal-actions"><button autoFocus onClick={() => setAboutOpen(false)}>Close</button></div></Modal>}
+      {entryMenu && <div className="context-menu" role="menu" style={{ left: entryMenu.x, top: entryMenu.y }} onClick={(event) => event.stopPropagation()}>{entryMenu.entry.isDirectory ? <button role="menuitem" onClick={() => { const path = entryMenu.entry.path; setEntryMenu(null); navigateFolder(path); }}>Open Folder</button> : <><button role="menuitem" onClick={() => { const entry = entryMenu.entry; setEntryMenu(null); void requestEntryOpen(entry, false); }}>Open</button><button role="menuitem" onClick={() => { const entry = entryMenu.entry; setEntryMenu(null); void requestEntryOpen(entry, true); }}>Quick Look</button></>}<button role="menuitem" onClick={() => { const path = entryMenu.entry.path; setEntryMenu(null); void requestExtraction([path]); }}>Extract {entryMenu.entry.isDirectory ? "Folder" : "File"}…</button>{archive?.canModify && <><button role="menuitem" onClick={() => { const entry = entryMenu.entry; setEntryMenu(null); requestRename(entry); }}>Rename…</button><button className="danger-button" role="menuitem" onClick={() => { const path = entryMenu.entry.path; setEntryMenu(null); void requestDelete([path]); }}>Delete</button></>}<button role="menuitem" onClick={() => { const path = entryMenu.entry.path; setEntryMenu(null); void copyPaths([path]); }}>Copy Path</button><button role="menuitem" onClick={() => { setPropertiesEntry(entryMenu.entry); setEntryMenu(null); }}>Properties</button></div>}
+      {aboutOpen && <Modal className="about-dialog" labelledBy="about-title" onClose={() => setAboutOpen(false)}><div className="about-heading"><img src={appIcon} alt="" /><div><h2 id="about-title">Archi</h2><p>Version {appVersion ?? "0.3.0"}</p></div></div><p>Fast, private archive management for macOS.</p><dl><dt>Archive engine</dt><dd>7-Zip 26.02</dd></dl><p className="about-legal">7-Zip is licensed separately under the GNU LGPL with the unRAR restriction. Full notices and corresponding source are included with Archi.</p><p>© 2026 Nitivar</p><div className="modal-actions"><button autoFocus onClick={() => setAboutOpen(false)}>Close</button></div></Modal>}
       {propertiesEntry && <PropertiesDialog entry={propertiesEntry} onClose={() => setPropertiesEntry(null)} />}
       {renameDialog && <Modal className="password-dialog" labelledBy="rename-title" onClose={() => setRenameDialog(null)}><form className="modal-form" onSubmit={submitRename}><h2 id="rename-title">Rename archive entry</h2><p>{renameDialog.entry.path}</p><label>New name<input autoFocus value={renameDialog.name} onChange={(event) => setRenameDialog({ ...renameDialog, name: event.target.value })} /></label><div className="modal-actions"><button type="button" onClick={() => setRenameDialog(null)}>Cancel</button><button className="primary-button" type="submit">Rename</button></div></form></Modal>}
       {commentOpen && <Modal className="comment-dialog" labelledBy="comment-title" onClose={() => setCommentOpen(false)}><form className="modal-form" onSubmit={submitComment}><h2 id="comment-title">ZIP archive comment</h2><label>Comment<textarea autoFocus rows={6} maxLength={65535} value={commentDraft} onChange={(event) => setCommentDraft(event.target.value)} /></label><p>{new TextEncoder().encode(commentDraft).length.toLocaleString()} of 65,535 UTF-8 bytes</p><div className="modal-actions"><button type="button" onClick={() => setCommentOpen(false)}>Cancel</button><button className="primary-button" type="submit">Save Comment</button></div></form></Modal>}
       {extractDialog && <Modal className="extract-dialog" labelledBy="extract-title" onClose={() => setExtractDialog(null)}><form className="modal-form" onSubmit={submitExtraction}><h2 id="extract-title">Extract {extractDialog.entries.length ? `${extractDialog.entries.length} selected` : "all entries"}</h2>{conflictMessage && <p className="inline-error" role="alert">{conflictMessage}</p>}<label>Destination<div className="output-picker"><input readOnly value={extractDialog.destination} /><button type="button" onClick={changeExtractFolder}>Choose…</button></div></label><label>Existing files<select value={conflictPolicy} onChange={(event) => setConflictPolicy(event.target.value as ConflictPolicy)}><option value="ask">Ask before changing</option><option value="replace">Replace files</option><option value="skip">Skip files</option><option value="keepBoth">Keep both</option></select></label><label className="checkbox-label"><input type="checkbox" checked={revealExtraction} onChange={(event) => setRevealExtraction(event.target.checked)} />Open destination after extraction</label><p>Folder structure is preserved. Existing files follow the policy above.</p><div className="modal-actions"><button type="button" onClick={() => setExtractDialog(null)}>Cancel</button><button className="primary-button" type="submit">Extract {extractDialog.entries.length || "All"}</button></div></form></Modal>}
       {passwordAction && <Modal className="password-dialog" labelledBy="password-title" onClose={clearPasswordPrompt}><form className="modal-form" onSubmit={submitPassword}><h2 id="password-title">Archive password</h2><p>Enter the password for {leafName(passwordAction.path)}.</p>{passwordError && <p className="inline-error" role="alert">{passwordError}</p>}<label>Password<input autoFocus type={showPassword ? "text" : "password"} value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="off" /></label><label className="checkbox-label"><input type="checkbox" checked={showPassword} onChange={(event) => setShowPassword(event.target.checked)} />Show password</label><div className="modal-actions"><button type="button" onClick={clearPasswordPrompt}>Cancel</button><button className="primary-button" type="submit" disabled={!password || busy}>Continue</button></div></form></Modal>}
-      {createOpen && <Modal className="create-dialog" labelledBy="create-title" onClose={() => setCreateOpen(false)}><form className="modal-form" onSubmit={submitCreate}><h2 id="create-title">New Archive</h2><div className="source-picker"><div><strong>Items</strong><span>{createInputs.length ? `${createInputs.length} selected` : "Drop items here or choose them"}</span></div><div className="header-actions"><button type="button" onClick={addFiles}>Add Files…</button><button type="button" onClick={addFolder}>Add Folder…</button></div></div>{createInputs.length > 0 && <ul className="source-list">{createInputs.map((path) => <li key={path} title={path}><span>{leafName(path)}</span><button type="button" aria-label={`Remove ${leafName(path)}`} onClick={() => setCreateInputs((current) => current.filter((value) => value !== path))}>×</button></li>)}</ul>}<label>Output<div className="output-picker"><input readOnly value={createOutput} placeholder="Choose where to save the archive" /><button type="button" onClick={chooseCreateOutput}>Choose…</button></div></label><div className="form-grid"><label>Format<select value={createFormat} onChange={(event) => { const format = event.target.value as ArchiveFormat; setCreateFormat(format); setCompression(compressionFor(format, settings)); setCreateOutput(""); }}><option value="zip">ZIP</option><option value="sevenZip">7z</option></select></label><label>Compression<select value={compression} onChange={(event) => setCompression(event.target.value as CompressionLevel)}><option value="store">Store</option><option value="fast">Fast</option><option value="normal">Normal</option><option value="maximum">Maximum</option></select></label><label>Split into volumes<select value={volumeSize ?? ""} onChange={(event) => setVolumeSize(event.target.value ? Number(event.target.value) : null)}><option value="">Single archive</option><option value={10 * 1024 ** 2}>10 MiB</option><option value={100 * 1024 ** 2}>100 MiB</option><option value={1024 ** 3}>1 GiB</option><option value={4 * 1024 ** 3}>4 GiB</option></select></label></div><label className="checkbox-label"><input type="checkbox" checked={encrypt} onChange={(event) => setEncrypt(event.target.checked)} />Encrypt archive</label>{encrypt && <div className="form-grid"><label>Password<input type={showCreatePassword ? "text" : "password"} value={createPassword} onChange={(event) => setCreatePassword(event.target.value)} autoComplete="new-password" /></label><label>Confirm password<input type={showCreatePassword ? "text" : "password"} value={createConfirmation} onChange={(event) => setCreateConfirmation(event.target.value)} autoComplete="new-password" /></label><label className="checkbox-label"><input type="checkbox" checked={showCreatePassword} onChange={(event) => setShowCreatePassword(event.target.checked)} />Show passwords</label></div>}{encrypt && createFormat === "zip" && <p className="compatibility-note">ZIP encryption uses AES-256; some older unzip tools may not support it.</p>}<div className="modal-actions"><button type="button" onClick={() => setCreateOpen(false)}>Cancel</button><button className="primary-button" type="submit">Create {createFormat === "zip" ? "ZIP" : "7z"}</button></div></form></Modal>}
-      {settingsOpen && <Modal className="settings-dialog" labelledBy="settings-title" onClose={() => setSettingsOpen(false)}><form className="modal-form" onSubmit={submitSettings}><h2 id="settings-title">Settings</h2><fieldset><legend>Defaults</legend><div className="form-grid"><label>Archive format<select value={settingsDraft.defaultFormat} onChange={(event) => setSettingsDraft({ ...settingsDraft, defaultFormat: event.target.value as ArchiveFormat })}><option value="zip">ZIP</option><option value="sevenZip">7z</option></select></label><label>ZIP compression<select value={settingsDraft.zipCompression} onChange={(event) => setSettingsDraft({ ...settingsDraft, zipCompression: event.target.value as CompressionLevel })}><option value="store">Store</option><option value="fast">Fast</option><option value="normal">Normal</option><option value="maximum">Maximum</option></select></label><label>7z compression<select value={settingsDraft.sevenZipCompression} onChange={(event) => setSettingsDraft({ ...settingsDraft, sevenZipCompression: event.target.value as CompressionLevel })}><option value="store">Store</option><option value="fast">Fast</option><option value="normal">Normal</option><option value="maximum">Maximum</option></select></label></div><label>Extraction destination<select value={settingsDraft.extractionDestination} onChange={(event) => setSettingsDraft({ ...settingsDraft, extractionDestination: event.target.value as Settings["extractionDestination"] })}><option value="ask">Ask every time</option><option value="sibling">Folder beside archive</option><option value="custom">Custom folder</option></select></label>{settingsDraft.extractionDestination === "custom" && <div className="output-picker"><input readOnly value={settingsDraft.customDestination ?? ""} placeholder="Choose a folder" /><button type="button" onClick={chooseCustomDestination}>Choose…</button></div>}</fieldset><fieldset><legend>Completion and browsing</legend><label className="checkbox-label"><input type="checkbox" checked={settingsDraft.revealOnCompletion} onChange={(event) => setSettingsDraft({ ...settingsDraft, revealOnCompletion: event.target.checked })} />Open destination after extraction</label><label className="checkbox-label"><input type="checkbox" checked={settingsDraft.notifications} onChange={(event) => setSettingsDraft({ ...settingsDraft, notifications: event.target.checked })} />Completion notifications</label><label className="checkbox-label"><input type="checkbox" checked={settingsDraft.showHiddenEntries} onChange={(event) => setSettingsDraft({ ...settingsDraft, showHiddenEntries: event.target.checked })} />Show hidden archive entries</label><label>Maximum declared extraction size<select value={settingsDraft.maxExpandedBytes} onChange={(event) => setSettingsDraft({ ...settingsDraft, maxExpandedBytes: Number(event.target.value) })}><option value={1024 ** 3}>1 GiB</option><option value={10 * 1024 ** 3}>10 GiB</option><option value={100 * 1024 ** 3}>100 GiB</option><option value={1024 ** 4}>1 TiB</option></select></label></fieldset><fieldset><legend>Finder integration</legend><p>{integration?.available && integration.providerRegistered ? `${integration.documentExtensions} archive extensions and ${integration.serviceActions} Finder Services are installed.` : integration ? "Finder integration is unavailable in this build." : "Checking Finder integration…"}</p><p>Service visibility can be enabled or disabled in macOS System Settings → Keyboard → Keyboard Shortcuts → Services.</p><button type="button" onClick={refreshIntegration}>Refresh Status</button></fieldset><fieldset><legend>Privacy and diagnostics</legend><label className="checkbox-label"><input type="checkbox" checked={settingsDraft.historyEnabled} onChange={(event) => setSettingsDraft({ ...settingsDraft, historyEnabled: event.target.checked })} />Remember recent archives on this Mac</label><p>Recent archive paths stay in this user account and are deleted when history is disabled.</p><div className="header-actions"><button type="button" onClick={clearHistory} disabled={!recents.length}>Clear History…</button><button type="button" onClick={exportLocalDiagnostics}>Export Diagnostics…</button><button type="button" className="danger-button" onClick={clearLocalDiagnostics}>Clear Logs…</button></div><p>Local diagnostics contain app, OS, architecture, engine version, operation, and error codes—never passwords, file contents, or entry lists.</p></fieldset><div className="modal-actions"><button type="button" onClick={restoreSettings}>Reset Defaults</button><span className="modal-spacer" /><button type="button" onClick={() => setSettingsOpen(false)}>Cancel</button><button className="primary-button" type="submit">Save Settings</button></div></form></Modal>}
+      {createOpen && <Modal className="create-dialog" labelledBy="create-title" onClose={() => setCreateOpen(false)}><form className="modal-form" onSubmit={submitCreate}><h2 id="create-title">New Archive</h2><div className="source-picker"><div><strong>Items</strong><span>{createInputs.length ? `${createInputs.length} selected` : "Drop items here or choose them"}</span></div><div className="header-actions"><button type="button" onClick={addFiles}>Add Files…</button><button type="button" onClick={addFolder}>Add Folder…</button></div></div>{createInputs.length > 0 && <ul className="source-list">{createInputs.map((path) => <li key={path} title={path}><span>{leafName(path)}</span><button type="button" aria-label={`Remove ${leafName(path)}`} onClick={() => setCreateInputs((current) => current.filter((value) => value !== path))}>×</button></li>)}</ul>}<label>Output<div className="output-picker"><input readOnly value={createOutput} placeholder="Choose where to save the archive" /><button type="button" onClick={chooseCreateOutput}>Choose…</button></div></label><div className="form-grid"><label>Format<select value={createFormat} onChange={(event) => { const format = event.target.value as ArchiveFormat; setCreateFormat(format); setCompression(compressionFor(format, settings)); setCreateOutput(""); setEncrypt(false); setVolumeSize(null); }}>{createFormats.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label><label>Compression<select value={compression} onChange={(event) => setCompression(event.target.value as CompressionLevel)}><option value="store">Store</option><option value="fast">Fast</option><option value="normal">Normal</option><option value="maximum">Maximum</option></select></label>{supportsArchiveOptions(createFormat) && <label>Split into volumes<select value={volumeSize ?? ""} onChange={(event) => setVolumeSize(event.target.value ? Number(event.target.value) : null)}><option value="">Single archive</option><option value={10 * 1024 ** 2}>10 MiB</option><option value={100 * 1024 ** 2}>100 MiB</option><option value={1024 ** 3}>1 GiB</option><option value={4 * 1024 ** 3}>4 GiB</option></select></label>}</div>{isStreamFormat(createFormat) && <p className="compatibility-note">Compressed streams accept one regular file. Use a TAR format for folders or multiple items.</p>}{supportsArchiveOptions(createFormat) && <label className="checkbox-label"><input type="checkbox" checked={encrypt} onChange={(event) => setEncrypt(event.target.checked)} />Encrypt archive</label>}{encrypt && supportsArchiveOptions(createFormat) && <div className="form-grid"><label>Password<input type={showCreatePassword ? "text" : "password"} value={createPassword} onChange={(event) => setCreatePassword(event.target.value)} autoComplete="new-password" /></label><label>Confirm password<input type={showCreatePassword ? "text" : "password"} value={createConfirmation} onChange={(event) => setCreateConfirmation(event.target.value)} autoComplete="new-password" /></label><label className="checkbox-label"><input type="checkbox" checked={showCreatePassword} onChange={(event) => setShowCreatePassword(event.target.checked)} />Show passwords</label></div>}{encrypt && createFormat === "zip" && <p className="compatibility-note">ZIP encryption uses AES-256; some older unzip tools may not support it.</p>}<div className="modal-actions"><button type="button" onClick={() => setCreateOpen(false)}>Cancel</button><button className="primary-button" type="submit">Create {createFormats.find(({ value }) => value === createFormat)?.label}</button></div></form></Modal>}
+      {settingsOpen && <Modal className="settings-dialog" labelledBy="settings-title" onClose={() => setSettingsOpen(false)}><form className="modal-form" onSubmit={submitSettings}><h2 id="settings-title">Settings</h2><fieldset><legend>Defaults</legend><div className="form-grid"><label>Archive format<select value={settingsDraft.defaultFormat} onChange={(event) => setSettingsDraft({ ...settingsDraft, defaultFormat: event.target.value as ArchiveFormat })}>{createFormats.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label><label>ZIP compression<select value={settingsDraft.zipCompression} onChange={(event) => setSettingsDraft({ ...settingsDraft, zipCompression: event.target.value as CompressionLevel })}><option value="store">Store</option><option value="fast">Fast</option><option value="normal">Normal</option><option value="maximum">Maximum</option></select></label><label>7z compression<select value={settingsDraft.sevenZipCompression} onChange={(event) => setSettingsDraft({ ...settingsDraft, sevenZipCompression: event.target.value as CompressionLevel })}><option value="store">Store</option><option value="fast">Fast</option><option value="normal">Normal</option><option value="maximum">Maximum</option></select></label></div><label>Extraction destination<select value={settingsDraft.extractionDestination} onChange={(event) => setSettingsDraft({ ...settingsDraft, extractionDestination: event.target.value as Settings["extractionDestination"] })}><option value="ask">Ask every time</option><option value="sibling">Folder beside archive</option><option value="custom">Custom folder</option></select></label>{settingsDraft.extractionDestination === "custom" && <div className="output-picker"><input readOnly value={settingsDraft.customDestination ?? ""} placeholder="Choose a folder" /><button type="button" onClick={chooseCustomDestination}>Choose…</button></div>}</fieldset><fieldset><legend>Completion and browsing</legend><label className="checkbox-label"><input type="checkbox" checked={settingsDraft.revealOnCompletion} onChange={(event) => setSettingsDraft({ ...settingsDraft, revealOnCompletion: event.target.checked })} />Open destination after extraction</label><label className="checkbox-label"><input type="checkbox" checked={settingsDraft.notifications} onChange={(event) => setSettingsDraft({ ...settingsDraft, notifications: event.target.checked })} />Completion notifications</label><label className="checkbox-label"><input type="checkbox" checked={settingsDraft.showHiddenEntries} onChange={(event) => setSettingsDraft({ ...settingsDraft, showHiddenEntries: event.target.checked })} />Show hidden archive entries</label><label>Maximum declared extraction size<select value={settingsDraft.maxExpandedBytes} onChange={(event) => setSettingsDraft({ ...settingsDraft, maxExpandedBytes: Number(event.target.value) })}><option value={1024 ** 3}>1 GiB</option><option value={10 * 1024 ** 3}>10 GiB</option><option value={100 * 1024 ** 3}>100 GiB</option><option value={1024 ** 4}>1 TiB</option></select></label><label>Maximum temporary preview size<select value={settingsDraft.maxPreviewBytes} onChange={(event) => setSettingsDraft({ ...settingsDraft, maxPreviewBytes: Number(event.target.value) })}><option value={10 * 1024 ** 2}>10 MiB</option><option value={100 * 1024 ** 2}>100 MiB</option><option value={500 * 1024 ** 2}>500 MiB</option><option value={1024 ** 3}>1 GiB</option></select></label></fieldset><fieldset><legend>Finder integration</legend><p>{integration?.available && integration.providerRegistered ? `${integration.documentExtensions} archive extensions and ${integration.serviceActions} Finder Services are installed.` : integration ? "Finder integration is unavailable in this build." : "Checking Finder integration…"}</p><p>Service visibility can be enabled or disabled in macOS System Settings → Keyboard → Keyboard Shortcuts → Services.</p><button type="button" onClick={refreshIntegration}>Refresh Status</button></fieldset><fieldset><legend>Privacy and diagnostics</legend><label className="checkbox-label"><input type="checkbox" checked={settingsDraft.historyEnabled} onChange={(event) => setSettingsDraft({ ...settingsDraft, historyEnabled: event.target.checked })} />Remember recent archives on this Mac</label><p>Recent archive paths stay in this user account and are deleted when history is disabled.</p><div className="header-actions"><button type="button" onClick={clearHistory} disabled={!recents.length}>Clear History…</button><button type="button" onClick={exportLocalDiagnostics}>Export Diagnostics…</button><button type="button" className="danger-button" onClick={clearLocalDiagnostics}>Clear Logs…</button></div><p>Local diagnostics contain app, OS, architecture, engine version, operation, and error codes—never passwords, file contents, or entry lists.</p></fieldset><div className="modal-actions"><button type="button" onClick={restoreSettings}>Reset Defaults</button><span className="modal-spacer" /><button type="button" onClick={() => setSettingsOpen(false)}>Cancel</button><button className="primary-button" type="submit">Save Settings</button></div></form></Modal>}
     </main>
   );
 }
@@ -815,7 +871,13 @@ async function notificationPermission() {
   if (await isPermissionGranted()) return true;
   return await requestPermission() === "granted";
 }
-function compressionFor(format: ArchiveFormat, settings: Settings) { return format === "zip" ? settings.zipCompression : settings.sevenZipCompression; }
+function compressionFor(format: ArchiveFormat, settings: Settings) {
+  if (format === "zip") return settings.zipCompression;
+  if (format === "sevenZip") return settings.sevenZipCompression;
+  return settings.defaultCompression;
+}
+function supportsArchiveOptions(format: ArchiveFormat) { return format === "zip" || format === "sevenZip"; }
+function isStreamFormat(format: ArchiveFormat) { return format === "gzip" || format === "xz" || format === "zstd"; }
 function isArchivePath(path: string) {
   const lower = path.toLowerCase();
   const extension = lower.split(".").pop();
@@ -837,12 +899,13 @@ function EntryIcon({ entry, source }: { entry: ArchiveEntry; source?: string }) 
   return <svg className="entry-icon fallback-icon" viewBox="0 0 20 20" aria-hidden="true"><path d={path} /></svg>;
 }
 function leafName(path: string) { const parts = path.split(/[\\/]/).filter(Boolean); return parts[parts.length - 1] ?? path; }
+function isTypingTarget(target: EventTarget | null) { return target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement || (target instanceof HTMLElement && target.isContentEditable); }
 function parentPath(path: string) { const index = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\")); return index > 0 ? path.slice(0, index) : path; }
 function parentEntryPath(path: string) { const index = path.lastIndexOf("/"); return index < 0 ? "" : path.slice(0, index); }
 function contextMenuPosition(event: React.MouseEvent, entry: ArchiveEntry): EntryMenu {
   const margin = 8;
   const width = 190;
-  const height = entry.isDirectory ? 164 : 126;
+  const height = entry.isDirectory ? 220 : 290;
   return {
     entry,
     x: Math.max(margin, Math.min(event.clientX, window.innerWidth - width - margin)),

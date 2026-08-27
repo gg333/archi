@@ -46,6 +46,7 @@ fn main() {
             .flag("-fobjc-arc")
             .compile("archive_services");
         println!("cargo:rustc-link-lib=framework=AppKit");
+        println!("cargo:rustc-link-lib=framework=QuickLookUI");
         println!("cargo:rustc-link-lib=framework=UniformTypeIdentifiers");
     }
 

@@ -25,6 +25,7 @@ mod macos_services {
 
     unsafe extern "C" {
         fn archive_app_register_services();
+        fn archive_app_quick_look(path: *const c_char);
         fn archive_app_icon_data_url(key: *const c_char) -> *mut c_char;
         fn archive_app_free_string(value: *mut c_char);
     }
@@ -45,6 +46,17 @@ mod macos_services {
         } else if let Ok(mut pending) = PENDING_DOCUMENTS.lock() {
             pending.push(paths);
         }
+    }
+
+    pub(crate) fn quick_look(path: &std::path::Path) -> Result<(), crate::archive::ArchiveError> {
+        let path = CString::new(path.to_string_lossy().as_bytes()).map_err(|_| {
+            crate::archive::ArchiveError::new(
+                "preview_unavailable",
+                "The temporary preview path is not valid",
+            )
+        })?;
+        unsafe { archive_app_quick_look(path.as_ptr()) };
+        Ok(())
     }
 
     pub(super) fn icons(keys: Vec<String>) -> HashMap<String, String> {
@@ -262,6 +274,17 @@ pub fn run() {
             if let Err(error) = safe_paths::cleanup_stale_staging() {
                 eprintln!("Stale extraction cleanup failed: {error}");
             }
+            match app.path().app_cache_dir() {
+                Ok(cache) => {
+                    if let Err(error) = safe_paths::cleanup_stale_previews(
+                        &cache.join("Previews"),
+                        std::time::Duration::from_secs(24 * 60 * 60),
+                    ) {
+                        eprintln!("Stale preview cleanup failed: {error}");
+                    }
+                }
+                Err(error) => eprintln!("Preview cache is unavailable: {error}"),
+            }
             #[cfg(target_os = "macos")]
             macos_services::register(app.handle().clone(), shell_requests);
             Ok(())
@@ -269,6 +292,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::open_archive,
             commands::start_extract,
+            commands::open_archive_entry,
             commands::create_archive,
             commands::add_to_archive,
             commands::delete_archive_entries,

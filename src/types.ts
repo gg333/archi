@@ -44,7 +44,15 @@ export interface ExtractResult {
 }
 
 export type ConflictPolicy = "ask" | "replace" | "skip" | "keepBoth";
-export type ArchiveFormat = "zip" | "sevenZip";
+export type ArchiveFormat =
+  | "zip"
+  | "sevenZip"
+  | "tarGzip"
+  | "tarXz"
+  | "tarZstd"
+  | "gzip"
+  | "xz"
+  | "zstd";
 export type CompressionLevel = "store" | "fast" | "normal" | "maximum";
 export type ExtractionDestination = "ask" | "sibling" | "custom";
 
@@ -61,6 +69,7 @@ export interface Settings {
   showHiddenEntries: boolean;
   historyEnabled: boolean;
   maxExpandedBytes: number;
+  maxPreviewBytes: number;
   maxConcurrentJobs: 1;
 }
 

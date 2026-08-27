@@ -33,6 +33,8 @@ Diagnostics contain only a timestamp, Archi version, operating system, architect
 
 Archi uses private temporary staging directories during archive operations so output can be validated before it is installed. Job-owned temporary data is removed after success, failure, or cancellation, and stale Archi-owned staging directories are cleaned on startup.
 
+Opening or previewing an archived file extracts only that safe, regular file to `~/Library/Caches/com.nitivar.archi/Previews/` inside a random, owner-only directory. The default size limit is 100 MiB and can be configured up to 1 GiB. The copy is read-only with respect to the archive, and stale preview directories are removed on startup after about 24 hours.
+
 Finder Services pass selections through private, owner-only request files. Requests are validated, consumed once, and deleted before the action is dispatched.
 
 ## Passwords
@@ -45,7 +47,7 @@ If you enable completion notifications, macOS controls notification permission a
 
 ## Network access and updates
 
-Archi 0.2.0 does not contain an automatic updater or network-based archive features. Apple may perform its own Gatekeeper and notarization checks when you download or open a signed application; those checks are provided by macOS, not Archi telemetry.
+Archi 0.3.0 does not contain an automatic updater or network-based archive features. Apple may perform its own Gatekeeper and notarization checks when you download or open a signed application; those checks are provided by macOS, not Archi telemetry.
 
 ## Third-party software
 

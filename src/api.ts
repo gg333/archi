@@ -39,6 +39,15 @@ export function extractArchive(
   });
 }
 
+export function openArchiveEntry(
+  path: string,
+  entry: string,
+  quickLook: boolean,
+  password?: string,
+): Promise<void> {
+  return invoke("open_archive_entry", { path, entry, quickLook, password });
+}
+
 export function createArchive(
   inputs: string[],
   output: string,

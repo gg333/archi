@@ -14,6 +14,9 @@ const MAX_LOG_BYTES: u64 = 256 * 1024;
 pub(crate) const MIN_EXPANDED_BYTES: u64 = 1024 * 1024;
 pub(crate) const MAX_EXPANDED_BYTES: u64 = 1024 * 1024 * 1024 * 1024;
 const DEFAULT_EXPANDED_BYTES: u64 = 10 * 1024 * 1024 * 1024;
+const MIN_PREVIEW_BYTES: u64 = 1024 * 1024;
+const MAX_PREVIEW_BYTES: u64 = 1024 * 1024 * 1024;
+const DEFAULT_PREVIEW_BYTES: u64 = 100 * 1024 * 1024;
 const MAX_RECENT_ARCHIVES: usize = 10;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
@@ -43,6 +46,8 @@ pub(crate) struct Settings {
     history_enabled: bool,
     #[serde(default = "default_expanded_bytes")]
     max_expanded_bytes: u64,
+    #[serde(default = "default_preview_bytes")]
+    max_preview_bytes: u64,
     max_concurrent_jobs: u8,
 }
 
@@ -61,13 +66,24 @@ impl Default for Settings {
             show_hidden_entries: false,
             history_enabled: true,
             max_expanded_bytes: default_expanded_bytes(),
+            max_preview_bytes: default_preview_bytes(),
             max_concurrent_jobs: 1,
         }
     }
 }
 
+impl Settings {
+    pub(crate) fn preview_limit(&self) -> u64 {
+        self.max_preview_bytes.min(self.max_expanded_bytes)
+    }
+}
+
 const fn default_expanded_bytes() -> u64 {
     DEFAULT_EXPANDED_BYTES
+}
+
+const fn default_preview_bytes() -> u64 {
+    DEFAULT_PREVIEW_BYTES
 }
 
 const fn default_compression() -> CompressionLevel {
@@ -309,6 +325,12 @@ fn validate(settings: &Settings) -> Result<(), ArchiveError> {
             "The extraction size limit must be between 1 MiB and 1 TiB",
         ));
     }
+    if !(MIN_PREVIEW_BYTES..=MAX_PREVIEW_BYTES).contains(&settings.max_preview_bytes) {
+        return Err(ArchiveError::new(
+            "settings_invalid",
+            "The preview size limit must be between 1 MiB and 1 GiB",
+        ));
+    }
     if settings.extraction_destination == ExtractionDestination::Custom {
         let path = settings.custom_destination.as_deref().ok_or_else(|| {
             ArchiveError::new("settings_invalid", "Choose a custom extraction destination")
@@ -488,6 +510,13 @@ mod tests {
                 .max_expanded_bytes,
             DEFAULT_EXPANDED_BYTES
         );
+        assert_eq!(
+            data(directory.path().to_path_buf())
+                .load()
+                .unwrap()
+                .max_preview_bytes,
+            DEFAULT_PREVIEW_BYTES
+        );
     }
 
     #[test]
@@ -532,6 +561,7 @@ mod tests {
                 "showHiddenEntries": false,
                 "historyEnabled": true,
                 "maxExpandedBytes": 10_737_418_240_u64,
+                "maxPreviewBytes": 104_857_600_u64,
                 "maxConcurrentJobs": 1
             })
         );

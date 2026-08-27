@@ -1,16 +1,16 @@
-# Archi 0.2.0 known limitations
+# Archi 0.3.0 known limitations
 
 ## Platform and distribution
 
-- The current release candidate contains an Apple Silicon (`arm64`) Archi executable. The bundled 7-Zip engine is universal, but an Intel or universal Archi build is still required before claiming Intel support.
+- The macOS release is a universal Apple Silicon and Intel application.
 - Windows and Linux releases are not available yet.
 - macOS 13 or later is required.
 - Finder Services may need to be enabled under **System Settings → Keyboard → Keyboard Shortcuts → Services**.
 
 ## Archive operations
 
-- Archi creates only ZIP and 7z archives.
-- RAR and other supported non-ZIP/7z formats are read-only.
+- Archi creates ZIP, 7z, TAR.GZ, TAR.XZ, TAR.ZST, GZIP, XZ, and Zstandard files. Other supported formats are read-only.
+- GZIP, XZ, and Zstandard streams accept one regular file; folders and multiple selections require a TAR format.
 - Add, delete, and rename are limited to single-volume ZIP and 7z archives.
 - Comments are editable only for ZIP. 7z and multi-volume comments are not supported.
 - Symbolic links are skipped during archive creation. Archives containing links or special files are rejected during safe extraction rather than recreating them.
@@ -35,10 +35,10 @@ Archi validates declared expanded size against a user-configurable limit and ask
 - archive repair or recovery records
 - self-extracting archive creation
 - archive mounting
-- in-archive document or media previews
+- editing files opened or previewed from an archive back into the archive
 - remote URL or cloud-storage browsing
 - automatic updates
 - antivirus or malware classification
-- executing files directly from an archive
+- opening scripts, applications, or executable files directly from an archive
 
 Limitations will be narrowed only after compatibility and clean-machine evidence supports a broader release claim.

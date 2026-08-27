@@ -274,3 +274,6 @@ License material supplied in each upstream package is included under `third_part
 | Rust | zerovec | 0.11.8 | Unicode-3.0 | https://github.com/unicode-org/icu4x |
 | Rust | zerovec-derive | 0.11.6 | Unicode-3.0 | https://github.com/unicode-org/icu4x |
 | Rust | zmij | 1.0.23 | MIT | https://github.com/dtolnay/zmij |
+| Rust | zstd | 0.13.3 | MIT | https://github.com/gyscos/zstd-rs |
+| Rust | zstd-safe | 7.2.4 | MIT OR Apache-2.0 | https://github.com/gyscos/zstd-rs |
+| Rust | zstd-sys | 2.0.16+zstd.1.5.7 | MIT/Apache-2.0 | https://github.com/gyscos/zstd-rs |

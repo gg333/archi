@@ -3,14 +3,16 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
     fs::{self, File, FileTimes, OpenOptions},
-    io::{self, Write},
+    io::{self, Read, Write},
     path::{Path, PathBuf},
-    time::SystemTime,
+    time::{Duration, SystemTime},
 };
 use unicode_normalization::UnicodeNormalization;
 
 const STAGING_PREFIX: &str = "archive-app-extract-";
 const STAGING_LOCK: &str = ".archive-app-staging.lock";
+const PREVIEW_PREFIX: &str = "preview-";
+const PREVIEW_MARKER: &str = ".archi-preview";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -296,6 +298,147 @@ pub fn cleanup_stale_staging() -> Result<usize, ArchiveError> {
         }
     }
     Ok(removed)
+}
+
+pub fn cleanup_stale_previews(root: &Path, older_than: Duration) -> Result<usize, ArchiveError> {
+    prepare_preview_root(root)?;
+    let now = SystemTime::now();
+    let mut removed = 0;
+    for entry in fs::read_dir(root).map_err(preview_io_error)? {
+        let entry = entry.map_err(preview_io_error)?;
+        if !entry
+            .file_name()
+            .to_string_lossy()
+            .starts_with(PREVIEW_PREFIX)
+        {
+            continue;
+        }
+        let path = entry.path();
+        let metadata = fs::symlink_metadata(&path).map_err(preview_io_error)?;
+        if !metadata.is_dir() || metadata.file_type().is_symlink() {
+            continue;
+        }
+        let marker = path.join(PREVIEW_MARKER);
+        let marker_metadata = match fs::symlink_metadata(&marker) {
+            Ok(metadata) if metadata.is_file() && !metadata.file_type().is_symlink() => metadata,
+            Ok(_) => continue,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(preview_io_error(error)),
+        };
+        let age = now
+            .duration_since(marker_metadata.modified().map_err(preview_io_error)?)
+            .unwrap_or_default();
+        if age < older_than {
+            continue;
+        }
+        match fs::remove_dir_all(path) {
+            Ok(()) => removed += 1,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(preview_io_error(error)),
+        }
+    }
+    Ok(removed)
+}
+
+pub(crate) fn validate_preview_entry(
+    entry: &ArchiveEntry,
+    max_bytes: u64,
+) -> Result<(), ArchiveError> {
+    safe_components(&entry.path)?;
+    if entry.is_directory {
+        return Err(ArchiveError::new(
+            "preview_is_directory",
+            "Open folders by navigating inside the archive",
+        ));
+    }
+    if entry.is_link || entry.link_target.is_some() {
+        return Err(ArchiveError::new(
+            "unsafe_link",
+            "Archive links cannot be opened or previewed",
+        ));
+    }
+    let size = entry.size.ok_or_else(|| {
+        ArchiveError::new(
+            "preview_size_unknown",
+            "This entry does not declare a size and cannot be opened safely",
+        )
+    })?;
+    if size > max_bytes {
+        return Err(ArchiveError::new(
+            "preview_size_exceeded",
+            format!("This entry is {size} bytes, above the {max_bytes}-byte preview limit"),
+        ));
+    }
+    if has_executable_extension(&entry.path) {
+        return Err(executable_preview_error());
+    }
+    Ok(())
+}
+
+pub(crate) fn persist_preview_file(
+    staging: &Path,
+    selected_path: &str,
+    preview_root: &Path,
+    max_bytes: u64,
+) -> Result<PathBuf, ArchiveError> {
+    validate_staging(staging)?;
+    if count_files(staging)? != 1 {
+        return Err(ArchiveError::new(
+            "preview_output_invalid",
+            "The archive engine did not produce exactly one preview file",
+        ));
+    }
+    let components = safe_components(selected_path)?;
+    let source = components
+        .iter()
+        .fold(staging.to_path_buf(), |path, component| {
+            path.join(component)
+        });
+    let metadata = fs::symlink_metadata(&source).map_err(path_io_error)?;
+    if !metadata.is_file() || metadata.file_type().is_symlink() || is_hard_link(&metadata) {
+        return Err(ArchiveError::new(
+            "unsafe_file_type",
+            "Only regular archive files can be opened or previewed",
+        ));
+    }
+    if metadata.len() > max_bytes {
+        return Err(ArchiveError::new(
+            "preview_size_exceeded",
+            format!(
+                "The extracted entry is {} bytes, above the {max_bytes}-byte preview limit",
+                metadata.len()
+            ),
+        ));
+    }
+    if is_executable_payload(&source, &metadata)? {
+        return Err(executable_preview_error());
+    }
+
+    prepare_preview_root(preview_root)?;
+    let directory = tempfile::Builder::new()
+        .prefix(PREVIEW_PREFIX)
+        .tempdir_in(preview_root)
+        .map_err(preview_io_error)?;
+    restrict_preview_directory(directory.path())?;
+    let marker = directory.path().join(PREVIEW_MARKER);
+    File::create(&marker).map_err(preview_io_error)?;
+    restrict_preview_file(&marker)?;
+    let file_name = source.file_name().ok_or_else(|| {
+        ArchiveError::new("preview_output_invalid", "The preview file has no name")
+    })?;
+    let destination = directory.path().join(file_name);
+    let mut input = File::open(&source).map_err(preview_io_error)?;
+    let mut output = OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(&destination)
+        .map_err(preview_io_error)?;
+    io::copy(&mut input, &mut output).map_err(preview_io_error)?;
+    output.flush().map_err(preview_io_error)?;
+    output.sync_all().map_err(preview_io_error)?;
+    restrict_preview_file(&destination)?;
+    let kept = directory.keep();
+    Ok(kept.join(file_name))
 }
 
 pub fn validate_archive_entries(entries: &[ArchiveEntry]) -> Result<(), ArchiveError> {
@@ -1034,6 +1177,122 @@ fn count_files(path: &Path) -> Result<usize, ArchiveError> {
     Ok(count)
 }
 
+fn prepare_preview_root(root: &Path) -> Result<(), ArchiveError> {
+    if !root.is_absolute() {
+        return Err(ArchiveError::new(
+            "preview_unavailable",
+            "The preview cache path is not absolute",
+        ));
+    }
+    fs::create_dir_all(root).map_err(preview_io_error)?;
+    let metadata = fs::symlink_metadata(root).map_err(preview_io_error)?;
+    if !metadata.is_dir() || metadata.file_type().is_symlink() {
+        return Err(ArchiveError::new(
+            "preview_unavailable",
+            "The preview cache is not a real folder",
+        ));
+    }
+    restrict_preview_directory(root)
+}
+
+fn has_executable_extension(path: &str) -> bool {
+    let name = path.rsplit(['/', '\\']).next().unwrap_or(path);
+    let extension = name
+        .rsplit_once('.')
+        .map(|(_, value)| value.to_ascii_lowercase());
+    extension.is_some_and(|extension| {
+        matches!(
+            extension.as_str(),
+            "app"
+                | "bat"
+                | "bash"
+                | "bin"
+                | "cmd"
+                | "com"
+                | "command"
+                | "csh"
+                | "desktop"
+                | "exe"
+                | "fish"
+                | "jar"
+                | "js"
+                | "jse"
+                | "ksh"
+                | "msi"
+                | "msp"
+                | "php"
+                | "pl"
+                | "ps1"
+                | "py"
+                | "pyw"
+                | "rb"
+                | "run"
+                | "scr"
+                | "sh"
+                | "vbs"
+                | "wsf"
+                | "zsh"
+        )
+    })
+}
+
+fn is_executable_payload(path: &Path, metadata: &fs::Metadata) -> Result<bool, ArchiveError> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if metadata.permissions().mode() & 0o111 != 0 {
+            return Ok(true);
+        }
+    }
+    let mut file = File::open(path).map_err(preview_io_error)?;
+    let mut prefix = [0_u8; 8];
+    let read = file.read(&mut prefix).map_err(preview_io_error)?;
+    let prefix = &prefix[..read];
+    Ok(prefix.starts_with(b"#!")
+        || prefix.starts_with(b"MZ")
+        || prefix.starts_with(b"\x7fELF")
+        || matches!(
+            prefix.get(..4),
+            Some(
+                [0xfe, 0xed, 0xfa, 0xce]
+                    | [0xfe, 0xed, 0xfa, 0xcf]
+                    | [0xce, 0xfa, 0xed, 0xfe]
+                    | [0xcf, 0xfa, 0xed, 0xfe]
+                    | [0xca, 0xfe, 0xba, 0xbe]
+                    | [0xbe, 0xba, 0xfe, 0xca]
+            )
+        ))
+}
+
+fn executable_preview_error() -> ArchiveError {
+    ArchiveError::new(
+        "preview_executable_blocked",
+        "Scripts, applications, and executable files cannot be opened from an archive",
+    )
+}
+
+#[cfg(unix)]
+fn restrict_preview_directory(path: &Path) -> Result<(), ArchiveError> {
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(path, fs::Permissions::from_mode(0o700)).map_err(preview_io_error)
+}
+
+#[cfg(not(unix))]
+fn restrict_preview_directory(_path: &Path) -> Result<(), ArchiveError> {
+    Ok(())
+}
+
+#[cfg(unix)]
+fn restrict_preview_file(path: &Path) -> Result<(), ArchiveError> {
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(path, fs::Permissions::from_mode(0o600)).map_err(preview_io_error)
+}
+
+#[cfg(not(unix))]
+fn restrict_preview_file(_path: &Path) -> Result<(), ArchiveError> {
+    Ok(())
+}
+
 fn unsafe_path(path: &str) -> ArchiveError {
     ArchiveError::new(
         "unsafe_path",
@@ -1062,12 +1321,81 @@ fn cleanup_error(error: io::Error) -> ArchiveError {
     )
 }
 
+fn preview_io_error(error: io::Error) -> ArchiveError {
+    ArchiveError::new(
+        "preview_unavailable",
+        format!("Could not prepare the temporary preview: {error}"),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::sync::Mutex;
 
     static STAGING_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    fn preview_entry(path: &str, size: Option<u64>) -> ArchiveEntry {
+        ArchiveEntry {
+            path: path.to_string(),
+            is_directory: false,
+            size,
+            packed_size: None,
+            modified: None,
+            encrypted: false,
+            method: None,
+            is_link: false,
+            link_target: None,
+        }
+    }
+
+    #[test]
+    fn preview_copy_is_private_scoped_and_executables_are_rejected() {
+        let root = tempfile::tempdir().unwrap();
+        let staging = root.path().join("staging");
+        let nested = staging.join("folder");
+        fs::create_dir_all(&nested).unwrap();
+        fs::write(nested.join("note.txt"), "preview me").unwrap();
+        let previews = root.path().join("Previews");
+        let preview =
+            persist_preview_file(&staging, "folder/note.txt", &previews, 100 * 1024 * 1024)
+                .unwrap();
+        assert_eq!(fs::read_to_string(&preview).unwrap(), "preview me");
+        assert!(preview.starts_with(&previews));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(&preview).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+
+        assert_eq!(
+            validate_preview_entry(&preview_entry("run.command", Some(1)), 100)
+                .unwrap_err()
+                .code,
+            "preview_executable_blocked"
+        );
+        fs::remove_dir_all(&staging).unwrap();
+        fs::create_dir_all(&staging).unwrap();
+        fs::write(staging.join("payload"), b"\xcf\xfa\xed\xfecontents").unwrap();
+        assert_eq!(
+            persist_preview_file(&staging, "payload", &previews, 100)
+                .unwrap_err()
+                .code,
+            "preview_executable_blocked"
+        );
+
+        let unrelated = previews.join("preview-unmarked");
+        fs::create_dir(&unrelated).unwrap();
+        assert_eq!(
+            cleanup_stale_previews(&previews, Duration::ZERO).unwrap(),
+            1
+        );
+        assert!(unrelated.exists());
+        assert!(!preview.exists());
+    }
 
     #[test]
     fn active_staging_is_locked_and_removed_on_drop() {

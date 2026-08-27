@@ -1,4 +1,5 @@
 #import <AppKit/AppKit.h>
+#import <QuickLookUI/QuickLookUI.h>
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #include <stdlib.h>
 #include <string.h>
@@ -11,6 +12,22 @@ extern void archive_app_receive_service_paths(const char *action, const char *pa
 - (void)archiveTest:(NSPasteboard *)pasteboard userData:(NSString *)userData error:(NSString **)error;
 - (void)archiveCompressZip:(NSPasteboard *)pasteboard userData:(NSString *)userData error:(NSString **)error;
 - (void)archiveCompressOptions:(NSPasteboard *)pasteboard userData:(NSString *)userData error:(NSString **)error;
+@end
+
+@interface ArchiveAppPreviewProvider : NSObject <QLPreviewPanelDataSource>
+@property(nonatomic, strong) NSURL *URL;
+@end
+
+@implementation ArchiveAppPreviewProvider
+
+- (NSInteger)numberOfPreviewItemsInPreviewPanel:(QLPreviewPanel *)panel {
+  return self.URL == nil ? 0 : 1;
+}
+
+- (id<QLPreviewItem>)previewPanel:(QLPreviewPanel *)panel previewItemAtIndex:(NSInteger)index {
+  return self.URL;
+}
+
 @end
 
 @implementation ArchiveAppServiceProvider
@@ -73,6 +90,25 @@ void archive_app_register_services(void) {
   provider = [[ArchiveAppServiceProvider alloc] init];
   NSApp.servicesProvider = provider;
   NSUpdateDynamicServices();
+}
+
+void archive_app_quick_look(const char *path) {
+  NSString *filePath = [[NSString alloc] initWithUTF8String:path];
+  if (filePath == nil) {
+    return;
+  }
+  dispatch_async(dispatch_get_main_queue(), ^{
+    static ArchiveAppPreviewProvider *provider;
+    if (provider == nil) {
+      provider = [[ArchiveAppPreviewProvider alloc] init];
+    }
+    provider.URL = [NSURL fileURLWithPath:filePath];
+    QLPreviewPanel *panel = [QLPreviewPanel sharedPreviewPanel];
+    panel.dataSource = provider;
+    panel.currentPreviewItemIndex = 0;
+    [panel reloadData];
+    [panel makeKeyAndOrderFront:nil];
+  });
 }
 
 char *archive_app_icon_data_url(const char *key) {

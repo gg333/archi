@@ -61,5 +61,6 @@ export const settingsContract = {
   showHiddenEntries: false,
   historyEnabled: true,
   maxExpandedBytes: 10 * 1024 ** 3,
+  maxPreviewBytes: 100 * 1024 ** 2,
   maxConcurrentJobs: 1,
 } satisfies Settings;

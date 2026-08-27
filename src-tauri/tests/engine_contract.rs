@@ -283,6 +283,83 @@ fn creates_mixed_zip_layout_compatible_with_system_unzip() {
     fs::remove_dir_all(root).unwrap();
 }
 
+#[test]
+fn creates_tarballs_and_single_file_streams() {
+    let engine = bundled_engine().unwrap();
+    let root = scratch("create-streams");
+    let source = root.join("source");
+    let file = source.join("hello.txt");
+    fs::create_dir_all(&source).unwrap();
+    fs::write(&file, "portable stream compatibility").unwrap();
+
+    for (name, format) in [
+        ("bundle.tar.gz", ArchiveFormat::TarGzip),
+        ("bundle.tar.xz", ArchiveFormat::TarXz),
+        ("bundle.tar.zst", ArchiveFormat::TarZstd),
+    ] {
+        let output = root.join(name);
+        let plan = prepare_creation(std::slice::from_ref(&source), &output).unwrap();
+        create_archive(
+            &engine,
+            &output,
+            &plan,
+            format,
+            CompressionLevel::Normal,
+            None,
+            None,
+        )
+        .unwrap();
+        test_archive(&engine, &output, None).unwrap();
+        let outer = root.join(format!("outer-{name}"));
+        extract_archive(&engine, &output, &outer, None).unwrap();
+        let tar = fs::read_dir(&outer)
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        let extracted = root.join(format!("extracted-{name}"));
+        extract_archive(&engine, &tar, &extracted, None).unwrap();
+        assert_eq!(
+            fs::read_to_string(extracted.join("source/hello.txt")).unwrap(),
+            "portable stream compatibility"
+        );
+    }
+
+    for (name, format) in [
+        ("hello.gz", ArchiveFormat::Gzip),
+        ("hello.xz", ArchiveFormat::Xz),
+        ("hello.zst", ArchiveFormat::Zstd),
+    ] {
+        let output = root.join(name);
+        let plan = prepare_creation(std::slice::from_ref(&file), &output).unwrap();
+        create_archive(
+            &engine,
+            &output,
+            &plan,
+            format,
+            CompressionLevel::Normal,
+            None,
+            None,
+        )
+        .unwrap();
+        test_archive(&engine, &output, None).unwrap();
+        let extracted = root.join(format!("extracted-{name}"));
+        extract_archive(&engine, &output, &extracted, None).unwrap();
+        let restored = fs::read_dir(&extracted)
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        assert_eq!(
+            fs::read_to_string(restored).unwrap(),
+            "portable stream compatibility"
+        );
+    }
+    fs::remove_dir_all(root).unwrap();
+}
+
 #[cfg(unix)]
 #[test]
 fn creation_skips_symbolic_links_without_following_them() {
