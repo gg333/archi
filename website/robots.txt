@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://gg333.github.io/archi/sitemap.xml

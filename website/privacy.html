@@ -15,19 +15,20 @@
 <body>
   <a class="skip-link" href="#main">Skip to content</a>
 
-  <header class="site-header">
+  <header class="site-header" id="site-header">
     <div class="container site-header-inner">
       <a class="brand" href="./index.html">
         <img class="brand-icon" src="assets/app-icon.png" alt="">
         <span>Archi</span>
       </a>
-      <nav class="site-nav" aria-label="Primary">
+      <nav class="site-nav" id="site-nav" aria-label="Primary">
         <a href="./index.html#features">Features</a>
         <a href="./formats.html">Formats</a>
         <a href="./privacy.html">Privacy</a>
         <a href="https://github.com/gg333/archi">GitHub</a>
       </nav>
-      <a class="button button-primary header-download" href="https://github.com/gg333/archi/releases/latest" data-download-link>Download</a>
+      <button class="menu-toggle" type="button" aria-expanded="false" aria-controls="site-nav" aria-label="Open navigation menu"><span></span><span></span><span></span></button>
+      <a class="button button-primary header-download" href="https://github.com/gg333/archi/releases/download/v0.3.0/Archi_0.3.0_universal.dmg" data-download-link>Download</a>
     </div>
   </header>
 
@@ -96,6 +97,13 @@
           directories are cleaned on startup.
         </p>
         <p>
+          Opening or previewing an archived file extracts only that safe, regular file to
+          <code>~/Library/Caches/com.nitivar.archi/Previews/</code> inside a random,
+          owner-only directory. The default size limit is 100&nbsp;MiB and can be configured
+          up to 1&nbsp;GiB. The copy is read-only with respect to the archive, and stale preview
+          directories are removed on startup after about 24 hours.
+        </p>
+        <p>
           Finder Services pass selections through private, owner-only request files.
           Requests are validated, consumed once, and deleted before the action is
           dispatched.
@@ -119,7 +127,7 @@
 
         <h2>Network access and updates</h2>
         <p>
-          Archi 0.2.0 does not contain an automatic updater or network-based archive
+          Archi 0.3.0 does not contain an automatic updater or network-based archive
           features. Apple may perform its own Gatekeeper and notarization checks when you
           download or open a signed application; those checks are provided by macOS, not
           Archi telemetry.

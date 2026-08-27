@@ -12,22 +12,23 @@
   <link rel="canonical" href="https://gg333.github.io/archi/formats.html">
   <link rel="stylesheet" href="assets/styles.css">
 </head>
-<body>
+<body class="formats-page">
   <a class="skip-link" href="#main">Skip to content</a>
 
-  <header class="site-header">
+  <header class="site-header" id="site-header">
     <div class="container site-header-inner">
       <a class="brand" href="./index.html">
         <img class="brand-icon" src="assets/app-icon.png" alt="">
         <span>Archi</span>
       </a>
-      <nav class="site-nav" aria-label="Primary">
+      <nav class="site-nav" id="site-nav" aria-label="Primary">
         <a href="./index.html#features">Features</a>
         <a href="./formats.html">Formats</a>
         <a href="./privacy.html">Privacy</a>
         <a href="https://github.com/gg333/archi">GitHub</a>
       </nav>
-      <a class="button button-primary header-download" href="https://github.com/gg333/archi/releases/latest" data-download-link>Download</a>
+      <button class="menu-toggle" type="button" aria-expanded="false" aria-controls="site-nav" aria-label="Open navigation menu"><span></span><span></span><span></span></button>
+      <a class="button button-primary header-download" href="https://github.com/gg333/archi/releases/download/v0.3.0/Archi_0.3.0_universal.dmg" data-download-link>Download</a>
     </div>
   </header>
 
@@ -43,13 +44,14 @@
 
       <article class="doc-body">
         <p>
-          This matrix describes Archi 0.2.0 on macOS with the bundled 7-Zip 26.02 engine.
+          This matrix describes Archi 0.3.0 on macOS with the bundled 7-Zip 26.02 engine.
           <strong>Supported</strong> means the operation is covered by Archi's automated
           compatibility corpus. <strong>Best effort</strong> means the bundled engine may
           handle the format, but Archi does not make a release guarantee for it yet.
         </p>
 
-        <div class="table-wrap">
+        <p class="table-hint">Scroll horizontally to see every operation.</p>
+        <div class="table-wrap" tabindex="0" aria-label="Supported formats matrix; scroll horizontally for more columns">
           <table class="matrix">
             <thead>
               <tr>
@@ -68,15 +70,16 @@
               <tr><td>7z</td><td class="yes">Supported</td><td class="yes">Supported</td><td class="yes">Supported</td><td class="yes">Read and AES-256 create</td><td class="yes">Add/delete/rename</td><td class="yes">Create/extract</td><td class="no">No</td></tr>
               <tr><td>RAR / RAR5</td><td class="yes">Supported</td><td class="yes">Supported</td><td class="no">No</td><td class="partial">Read when supported by engine</td><td class="no">No</td><td class="partial">Engine-dependent</td><td class="no">No</td></tr>
               <tr><td>TAR</td><td class="yes">Supported</td><td class="yes">Supported</td><td class="no">No</td><td class="no">No</td><td class="no">No</td><td class="no">No</td><td class="no">No</td></tr>
-              <tr><td>TGZ / TAR.GZ</td><td class="yes">Supported</td><td class="yes">Supported</td><td class="no">No</td><td class="no">No</td><td class="no">No</td><td class="no">No</td><td class="no">No</td></tr>
+              <tr><td>TGZ / TAR.GZ</td><td class="yes">Supported</td><td class="yes">Supported</td><td class="yes">Supported (.tar.gz)</td><td class="no">No</td><td class="no">No</td><td class="no">No</td><td class="no">No</td></tr>
               <tr><td>TBZ2 / TAR.BZ2</td><td class="yes">Supported</td><td class="yes">Supported</td><td class="no">No</td><td class="no">No</td><td class="no">No</td><td class="no">No</td><td class="no">No</td></tr>
-              <tr><td>TXZ / TAR.XZ</td><td class="yes">Supported</td><td class="yes">Supported</td><td class="no">No</td><td class="no">No</td><td class="no">No</td><td class="no">No</td><td class="no">No</td></tr>
-              <tr><td>GZIP stream</td><td class="yes">Supported</td><td class="yes">Supported</td><td class="no">No</td><td class="no">No</td><td class="no">No</td><td class="no">No</td><td class="no">No</td></tr>
+              <tr><td>TXZ / TAR.XZ</td><td class="yes">Supported</td><td class="yes">Supported</td><td class="yes">Supported (.tar.xz)</td><td class="no">No</td><td class="no">No</td><td class="no">No</td><td class="no">No</td></tr>
+              <tr><td>GZIP stream</td><td class="yes">Supported</td><td class="yes">Supported</td><td class="yes">Supported</td><td class="no">No</td><td class="no">No</td><td class="no">No</td><td class="no">No</td></tr>
               <tr><td>BZIP2 stream</td><td class="yes">Supported</td><td class="yes">Supported</td><td class="no">No</td><td class="no">No</td><td class="no">No</td><td class="no">No</td><td class="no">No</td></tr>
-              <tr><td>XZ stream</td><td class="yes">Supported</td><td class="yes">Supported</td><td class="no">No</td><td class="no">No</td><td class="no">No</td><td class="no">No</td><td class="no">No</td></tr>
+              <tr><td>XZ stream</td><td class="yes">Supported</td><td class="yes">Supported</td><td class="yes">Supported</td><td class="no">No</td><td class="no">No</td><td class="no">No</td><td class="no">No</td></tr>
               <tr><td>AR</td><td class="yes">Supported</td><td class="yes">Supported</td><td class="no">No</td><td class="no">No</td><td class="no">No</td><td class="no">No</td><td class="no">No</td></tr>
               <tr><td>CPIO</td><td class="yes">Supported</td><td class="yes">Supported</td><td class="no">No</td><td class="no">No</td><td class="no">No</td><td class="no">No</td><td class="no">No</td></tr>
-              <tr><td>TAR.ZST / ZSTD</td><td class="partial">Best effort</td><td class="partial">Best effort</td><td class="no">No</td><td class="partial">Engine-dependent</td><td class="no">No</td><td class="no">No</td><td class="no">No</td></tr>
+              <tr><td>TAR.ZST</td><td class="yes">Supported</td><td class="yes">Supported</td><td class="yes">Supported (.tar.zst)</td><td class="no">No</td><td class="no">No</td><td class="no">No</td><td class="no">No</td></tr>
+              <tr><td>Zstandard stream</td><td class="yes">Supported</td><td class="yes">Supported</td><td class="yes">Supported</td><td class="no">No</td><td class="no">No</td><td class="no">No</td><td class="no">No</td></tr>
               <tr><td>CAB</td><td class="partial">Best effort</td><td class="partial">Best effort</td><td class="no">No</td><td class="partial">Engine-dependent</td><td class="no">No</td><td class="no">No</td><td class="no">No</td></tr>
               <tr><td>ISO</td><td class="partial">Best effort</td><td class="partial">Best effort</td><td class="no">No</td><td class="partial">Engine-dependent</td><td class="no">No</td><td class="no">No</td><td class="no">No</td></tr>
               <tr><td>LZH / LHA</td><td class="partial">Best effort</td><td class="partial">Best effort</td><td class="no">No</td><td class="partial">Engine-dependent</td><td class="no">No</td><td class="no">No</td><td class="no">No</td></tr>
@@ -87,6 +90,7 @@
         <h2>Important behavior</h2>
         <ul>
           <li>RAR is read-only. Archi does not create or modify RAR archives.</li>
+          <li>GZIP, XZ, and Zstandard streams accept exactly one regular file. Use a TAR format for folders or multiple items.</li>
           <li>Modification is available only for single-volume ZIP and 7z archives.</li>
           <li>ZIP comments are supported; 7z and multi-volume comments are not exposed.</li>
           <li>Compound archives and single compressed streams may initially appear as one logical inner file, such as <code>archive.tar</code>. Extract that file and open it separately.</li>

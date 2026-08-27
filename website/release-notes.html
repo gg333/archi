@@ -3,8 +3,8 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Release notes — Archi 0.2.0</title>
-  <meta name="description" content="Archi 0.2.0: the first feature-complete macOS release of the local-first archive manager. Highlights, safety notes, and verification.">
+  <title>Release notes — Archi 0.3.0</title>
+  <meta name="description" content="Archi 0.3.0 adds native archive-entry previews and more creation formats to the private macOS archive manager.">
   <meta name="color-scheme" content="light dark">
   <meta name="theme-color" content="#eef1f5" media="(prefers-color-scheme: light)">
   <meta name="theme-color" content="#17191d" media="(prefers-color-scheme: dark)">
@@ -15,19 +15,20 @@
 <body>
   <a class="skip-link" href="#main">Skip to content</a>
 
-  <header class="site-header">
+  <header class="site-header" id="site-header">
     <div class="container site-header-inner">
       <a class="brand" href="./index.html">
         <img class="brand-icon" src="assets/app-icon.png" alt="">
         <span>Archi</span>
       </a>
-      <nav class="site-nav" aria-label="Primary">
+      <nav class="site-nav" id="site-nav" aria-label="Primary">
         <a href="./index.html#features">Features</a>
         <a href="./formats.html">Formats</a>
         <a href="./privacy.html">Privacy</a>
         <a href="https://github.com/gg333/archi">GitHub</a>
       </nav>
-      <a class="button button-primary header-download" href="https://github.com/gg333/archi/releases/latest" data-download-link>Download</a>
+      <button class="menu-toggle" type="button" aria-expanded="false" aria-controls="site-nav" aria-label="Open navigation menu"><span></span><span></span><span></span></button>
+      <a class="button button-primary header-download" href="https://github.com/gg333/archi/releases/download/v0.3.0/Archi_0.3.0_universal.dmg" data-download-link>Download</a>
     </div>
   </header>
 
@@ -38,20 +39,21 @@
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="15 18 9 12 15 6"/></svg>
           Back to the Archi site
         </a>
-        <h1>Archi 0.2.0 release notes</h1>
-        <p class="doc-meta"><strong>Release status:</strong> Release candidate. Publication remains gated on Apple notarization, stapling, and clean-machine acceptance.</p>
+        <h1>Archi 0.3.0 release notes</h1>
+        <p class="doc-meta"><strong>Release status:</strong> Production macOS release.</p>
       </header>
 
       <article class="doc-body">
         <p>
-          Archi 0.2.0 is the first feature-complete macOS release of the local-first
-          archive manager.
+          Archi 0.3.0 expands archive creation and adds safe native file previews while
+          preserving Archi's local-first, staged-extraction architecture.
         </p>
 
         <h2>Highlights</h2>
         <ul>
           <li>Open, browse, search, sort, test, and safely extract supported archives without extracting them first.</li>
           <li>Create ZIP and 7z archives from files, folders, mixed selections, and empty folders.</li>
+          <li>Create TAR.GZ, TAR.XZ, and TAR.ZST archives plus GZIP, XZ, and Zstandard single-file streams.</li>
           <li>Create encrypted ZIP and 7z archives; 7z supports encrypted file names.</li>
           <li>Extract all entries or only selected files and folders.</li>
           <li>Safely add, delete, and rename entries in single-volume ZIP and 7z archives.</li>
@@ -60,6 +62,7 @@
           <li>Resolve extraction conflicts with Ask, Replace, Skip, or Keep Both.</li>
           <li>Show progress, current entry, elapsed time, speed, warnings, and cancellation state.</li>
           <li>Open the completed extraction destination in Finder.</li>
+          <li>Open a safe archived file in its default Mac app, or press Spacebar for native Quick Look.</li>
           <li>Open archives through file associations and use five Finder Services: Extract Here, Extract to Folder, Test Archive, Compress to ZIP, and Compress with Options.</li>
           <li>Keep up to ten recent archive paths locally, with controls to disable and clear history.</li>
         </ul>
@@ -75,12 +78,12 @@
 
         <h2>Distribution</h2>
         <ul>
-          <li>Product: Archi 0.2.0</li>
+          <li>Product: Archi 0.3.0</li>
           <li>Bundle identifier: <code>com.nitivar.archi</code></li>
           <li>Minimum system: macOS 13</li>
-          <li>Current build architecture: Apple Silicon (<code>arm64</code>)</li>
+          <li>Build architecture: universal Apple Silicon and Intel</li>
           <li>Archive engine: official 7-Zip 26.02 universal macOS binary</li>
-          <li>Packaging: Developer-ID-signed DMG with hardened runtime</li>
+          <li>Packaging: Developer-ID-signed, notarized, and stapled DMG with hardened runtime</li>
         </ul>
 
         <p>
@@ -94,17 +97,17 @@
         <ul>
           <li>TypeScript/Vite production build</li>
           <li>Rust formatting and strict Clippy</li>
-          <li>36 Rust unit tests</li>
-          <li>8 active engine contract tests</li>
+          <li>38 Rust unit tests</li>
+          <li>9 active engine contract tests</li>
           <li>10 security tests</li>
           <li>100,000-entry listing gate</li>
           <li>1,000-operation real-engine stress gate</li>
-          <li>Developer ID signing of Archi, the bundled <code>7zz</code>, and the DMG</li>
+          <li>Developer ID signing, Apple notarization, and stapling of the universal DMG</li>
         </ul>
 
         <p>
-          Final Gatekeeper, stapler, clean-install, Finder lifecycle, upgrade, and
-          uninstall results will be recorded before publication.
+          Clean-machine installation, upgrade, Finder lifecycle, and uninstall checks remain
+          part of the manual release checklist and are not claimed by this automated verification summary.
         </p>
       </article>
     </div>
