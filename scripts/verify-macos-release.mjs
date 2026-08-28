@@ -138,6 +138,8 @@ try {
     cpSync(sevenZip, bundledCopy);
     execFileSync("codesign", ["--remove-signature", expectedCopy]);
     execFileSync("codesign", ["--remove-signature", bundledCopy]);
+    execFileSync("codesign", ["--force", "--sign", "-", "--identifier", "7zz", expectedCopy]);
+    execFileSync("codesign", ["--force", "--sign", "-", "--identifier", "7zz", bundledCopy]);
     if ((await sha256(expectedCopy)) !== (await sha256(bundledCopy))) {
       throw new Error("The bundled 7zz payload differs from the checked-in binary.");
     }
