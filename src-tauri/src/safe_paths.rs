@@ -9,6 +9,8 @@ use std::{
 };
 use unicode_normalization::UnicodeNormalization;
 
+pub(crate) mod quarantine;
+
 const STAGING_PREFIX: &str = "archive-app-extract-";
 const STAGING_LOCK: &str = ".archive-app-staging.lock";
 const PREVIEW_PREFIX: &str = "preview-";
@@ -87,6 +89,7 @@ impl ArchiveRewrite {
             .map_err(destination_error)?;
         temporary.as_file_mut().flush().map_err(destination_error)?;
         temporary.as_file().sync_all().map_err(destination_error)?;
+        quarantine::copy(source, temporary.path()).map_err(destination_error)?;
         let (_, temporary) = temporary
             .keep()
             .map_err(|error| destination_error(error.error))?;
@@ -437,6 +440,7 @@ pub(crate) fn persist_preview_file(
     output.flush().map_err(preview_io_error)?;
     output.sync_all().map_err(preview_io_error)?;
     restrict_preview_file(&destination)?;
+    quarantine::copy(staging, &destination).map_err(preview_io_error)?;
     let kept = directory.keep();
     Ok(kept.join(file_name))
 }
@@ -511,7 +515,7 @@ pub fn commit_staging(
         let target = destination.join(source.file_name().ok_or_else(|| {
             ArchiveError::new("unsafe_path", "An extracted entry had no file name")
         })?);
-        commit_entry(&source, &target, policy, &mut summary, &mut index)?;
+        commit_entry(&source, &target, policy, &mut summary, &mut index, staging)?;
     }
     Ok(summary)
 }
@@ -839,6 +843,7 @@ fn commit_entry(
     policy: ConflictPolicy,
     summary: &mut CommitSummary,
     index: &mut DestinationIndex,
+    quarantine_source: &Path,
 ) -> Result<(), ArchiveError> {
     let source_metadata = fs::symlink_metadata(source).map_err(path_io_error)?;
     let existing = index.existing_equivalent(target)?;
@@ -884,6 +889,7 @@ fn commit_entry(
                 policy,
                 summary,
                 index,
+                quarantine_source,
             )?;
         }
         return Ok(());
@@ -907,7 +913,7 @@ fn commit_entry(
             ));
         }
     };
-    install_file(source, &final_target, replace.as_deref())?;
+    install_file(source, &final_target, replace.as_deref(), quarantine_source)?;
     if let Some(existing) = replace {
         index.remove(&existing)?;
     }
@@ -916,7 +922,12 @@ fn commit_entry(
     Ok(())
 }
 
-fn install_file(source: &Path, target: &Path, existing: Option<&Path>) -> Result<(), ArchiveError> {
+fn install_file(
+    source: &Path,
+    target: &Path,
+    existing: Option<&Path>,
+    quarantine_source: &Path,
+) -> Result<(), ArchiveError> {
     let parent = target.parent().ok_or_else(|| {
         ArchiveError::new(
             "invalid_destination",
@@ -941,6 +952,7 @@ fn install_file(source: &Path, target: &Path, existing: Option<&Path>) -> Result
         )
         .map_err(destination_error)?;
     temporary.as_file_mut().flush().map_err(destination_error)?;
+    quarantine::copy(quarantine_source, temporary.path()).map_err(destination_error)?;
 
     let backup = if let Some(existing) = existing {
         let backup = unique_internal_path(parent, ".archive-app-backup-")?;
@@ -1476,5 +1488,52 @@ mod tests {
         assert_eq!(error.code, "archive_changed");
         assert_eq!(fs::read_to_string(&source).unwrap(), "external change");
         assert_eq!(fs::read_to_string(recovery).unwrap(), "candidate");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn quarantine_survives_rewrite_preview_and_staged_commit() {
+        let marker = b"0081;66d00000;Archi;00000000-0000-0000-0000-000000000000";
+        let root = tempfile::tempdir().unwrap();
+
+        let archive = root.path().join("source.zip");
+        fs::write(&archive, "original").unwrap();
+        quarantine::write(&archive, marker).unwrap();
+        let rewrite = ArchiveRewrite::create(&archive).unwrap();
+        assert_eq!(
+            quarantine::read(rewrite.path()).unwrap().as_deref(),
+            Some(marker.as_slice())
+        );
+        fs::write(rewrite.path(), "replacement").unwrap();
+        rewrite.commit().unwrap();
+        assert_eq!(
+            quarantine::read(&archive).unwrap().as_deref(),
+            Some(marker.as_slice())
+        );
+
+        let staging = root.path().join("preview-staging");
+        fs::create_dir(&staging).unwrap();
+        fs::write(staging.join("note.txt"), "preview").unwrap();
+        quarantine::write(&staging, marker).unwrap();
+        let preview_root = root.path().join("previews");
+        let preview = persist_preview_file(&staging, "note.txt", &preview_root, 1024).unwrap();
+        assert_eq!(
+            quarantine::read(&preview).unwrap().as_deref(),
+            Some(marker.as_slice())
+        );
+
+        let staging = root.path().join("commit-staging");
+        let destination = root.path().join("destination");
+        fs::create_dir(&staging).unwrap();
+        fs::create_dir(&destination).unwrap();
+        fs::write(staging.join("payload.txt"), "payload").unwrap();
+        quarantine::write(&staging, marker).unwrap();
+        commit_staging(&staging, &destination, &archive, ConflictPolicy::KeepBoth).unwrap();
+        assert_eq!(
+            quarantine::read(&destination.join("payload.txt"))
+                .unwrap()
+                .as_deref(),
+            Some(marker.as_slice())
+        );
     }
 }
