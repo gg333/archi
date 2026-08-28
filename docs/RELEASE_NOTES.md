@@ -1,39 +1,40 @@
-# Archi 0.3.0 release notes
+# Archi 0.4.0 release notes
 
 **Release status:** Production macOS release.
 
-Archi 0.3.0 expands archive creation and adds safe native file previews while preserving the local-first, staged-extraction architecture introduced in 0.2.0.
+Archi 0.4.0 introduces a quieter, more native macOS archive browser while preserving the local-first, staged-extraction architecture and bounded large-archive browsing of earlier releases.
 
 ## Highlights
 
-- Open a safe regular file from an archive in its normal macOS application without extracting the whole archive.
-- Press Spacebar or choose **Quick Look** to preview supported files with the native macOS Quick Look panel.
-- Create TAR.GZ, TAR.XZ, and TAR.ZST archives.
-- Create GZIP, XZ, and Zstandard single-file streams.
-- Choose all new formats from the New Archive dialog or make one the default in Settings.
-- Configure a temporary-preview size limit from 10 MiB to 1 GiB; the default is 100 MiB.
-- Use the redesigned public website with an authentic app screenshot, mobile navigation, current format matrix, and direct release download.
+- Browse archives in an edge-to-edge macOS window with an overlay toolbar and native traffic lights.
+- Navigate folders from a hideable sidebar that loads only immediate child folders as they are expanded.
+- Search from the toolbar and use native file-type icons throughout the archive listing.
+- Use separate Add Files and Add Folder actions from one compact Add menu.
+- Choose Extract Selected or Extract All from the Extract menu.
+- Open recent archives explicitly through **File → Open Recent** without exposing their paths on the home screen.
+- Return to the home screen with **File → Close Archive** without modifying the archive or quitting Archi.
+- Use accessible popup menus that dismiss on outside click or Escape and restore keyboard focus.
+- Follow the system light or dark appearance with improved dark-mode contrast.
+- Read Size, Compressed, and Ratio values in right-aligned numeric columns.
 
-## Preview safety and privacy
+## Performance and privacy
 
-- Only a selected regular file is extracted into a random owner-only directory under `~/Library/Caches/com.nitivar.archi/Previews/`.
-- Directories, links, special files, executables, scripts, Mach-O files, and entries above the configured preview limit are blocked.
-- Preview contents never pass through JavaScript or WebView memory.
-- Opening or previewing a file does not modify the archive; changes in the external application are discarded from Archi's perspective.
-- Stale preview directories are removed on startup after approximately 24 hours.
+- The folder sidebar filters hidden folders consistently with the archive table.
+- Sidebar expansion sends only immediate child folders over the Tauri boundary instead of constructing the entire folder tree in JavaScript.
+- Archive listings remain paged in Rust, keeping WebView memory bounded for very large archives.
+- Recent archive paths remain local, owner-only, disableable, and clearable. They appear only after the user chooses **File → Open Recent**.
+- Archive contents, entry names, passwords, history, and diagnostics are never uploaded.
 
-## Existing archive features
+## Security and reliability
 
-- Browse, search, sort, test, and safely extract supported archives.
-- Extract all entries or selected files and folders with Ask, Replace, Skip, or Keep Both conflict handling.
-- Create encrypted ZIP and 7z archives, including encrypted 7z file names.
-- Add, delete, and rename entries in single-volume ZIP and 7z archives.
-- Create and extract ZIP and 7z multi-volume sets and edit UTF-8 ZIP comments.
-- Open completed extraction destinations in Finder and use five Finder Services.
+- Extraction safety ceilings cover declared expanded size, actual staged output, path depth, and entry count.
+- Quarantine metadata is preserved through archive rewrites, previews, and staged extraction.
+- Literal wildcard characters in archive paths are never expanded by the bundled engine.
+- Add, delete, rename, extraction, cancellation, and preview operations retain their existing staged and fail-safe behavior.
 
 ## Distribution
 
-- Product: Archi 0.3.0
+- Product: Archi 0.4.0
 - Bundle identifier: `com.nitivar.archi`
 - Minimum system: macOS 13
 - Architecture: universal Apple Silicon and Intel
@@ -44,12 +45,12 @@ See [Supported formats](SUPPORTED_FORMATS.md), [Known limitations](KNOWN_LIMITAT
 
 ## Verification
 
-- Final artifact: `Archi_0.3.0_universal.dmg`
-- SHA-256: `512792d13aeaee379c12a1b111a53cb6bfeebd0592cc748b181319b196f5de8e`
-- Apple notarization: app submission `0cd8d24c-eafc-4c4d-9d2e-be10dcacb41c` and DMG submission `b6f75f73-cb09-4f20-98c6-752fabebcb4e`, both accepted with no issues
-- TypeScript/Vite production build
-- Rust formatting and strict Clippy
-- Rust unit, engine-contract, security, 100,000-entry, and 1,000-operation stress tests
+- Final artifact: `Archi_0.4.0_universal.dmg`
+- SHA-256: `PENDING_FINAL_ARTIFACT`
+- Apple notarization: `PENDING_FINAL_ARTIFACT`
+- TypeScript/Vite production build and frontend tests
+- Rust formatting, strict Clippy, unit, engine-contract, and security tests
+- 100,000-entry listing and 1,000-operation real-engine stress gates
 - Universal Mach-O verification for Archi and the bundled `7zz`
 - Deep strict code-signature verification
 - Apple notarization, stapling, and Gatekeeper assessment

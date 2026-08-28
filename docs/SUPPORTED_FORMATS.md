@@ -1,6 +1,6 @@
 # Archi supported formats
 
-This matrix describes Archi 0.3.0 on macOS with the bundled 7-Zip 26.02 engine. **Supported** means the operation is covered by Archi's automated compatibility corpus. **Best effort** means the bundled engine may handle the format, but Archi does not make a release guarantee for it yet.
+This matrix describes Archi 0.4.0 on macOS with the bundled 7-Zip 26.02 engine. **Supported** means the operation is covered by Archi's automated compatibility corpus. **Best effort** means the bundled engine may handle the format, but Archi does not make a release guarantee for it yet.
 
 | Format | Browse | Test/extract | Create | Encryption | Modify | Multi-volume | Comments |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |

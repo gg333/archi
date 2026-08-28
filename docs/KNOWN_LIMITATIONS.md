@@ -1,4 +1,4 @@
-# Archi 0.3.0 known limitations
+# Archi 0.4.0 known limitations
 
 ## Platform and distribution
 

@@ -47,7 +47,7 @@ If you enable completion notifications, macOS controls notification permission a
 
 ## Network access and updates
 
-Archi 0.3.0 does not contain an automatic updater or network-based archive features. Apple may perform its own Gatekeeper and notarization checks when you download or open a signed application; those checks are provided by macOS, not Archi telemetry.
+Archi 0.4.0 does not contain an automatic updater or network-based archive features. Apple may perform its own Gatekeeper and notarization checks when you download or open a signed application; those checks are provided by macOS, not Archi telemetry.
 
 ## Third-party software
 
