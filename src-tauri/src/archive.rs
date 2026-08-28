@@ -677,6 +677,12 @@ pub(crate) fn spawn_extract_entries(
             format!("Could not create the extraction staging folder: {error}"),
         )
     })?;
+    crate::safe_paths::quarantine::copy(archive, destination).map_err(|error| {
+        ArchiveError::new(
+            "staging_failed",
+            format!("Could not preserve macOS quarantine metadata: {error}"),
+        )
+    })?;
     spawn_command(
         binary,
         &extract_args(archive, destination, entries),
@@ -1359,8 +1365,10 @@ fn spawn_command(
     }
 
     let mut command = Command::new(binary);
+    if let Some((operation, remaining)) = args.split_first() {
+        command.arg(operation).arg("-spd").args(remaining);
+    }
     command
-        .args(args)
         .env("LC_ALL", "C")
         .stdin(if password.is_some() {
             Stdio::piped()
@@ -1888,5 +1896,47 @@ mod tests {
                 "{message}"
             );
         }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn staged_extraction_carries_archive_quarantine_marker() {
+        let marker = b"0081;66d00000;Archi;00000000-0000-0000-0000-000000000000";
+        let root = scratch("quarantine-staging");
+        let source = root.join("source.txt");
+        let archive = root.join("source.zip");
+        let staging = root.join("staging");
+        fs::write(&source, "payload").unwrap();
+        fs::create_dir(&staging).unwrap();
+        let plan = prepare_creation(std::slice::from_ref(&source), &archive).unwrap();
+        create_archive(
+            &bundled_engine().unwrap(),
+            &archive,
+            &plan,
+            ArchiveFormat::Zip,
+            CompressionLevel::Normal,
+            None,
+            None,
+        )
+        .unwrap();
+        crate::safe_paths::quarantine::write(&archive, marker).unwrap();
+        let mut child = spawn_extract_entries(
+            &bundled_engine().unwrap(),
+            &archive,
+            &staging,
+            &[],
+            None,
+            Stdio::null(),
+            Stdio::null(),
+        )
+        .unwrap();
+        assert!(child.wait().unwrap().success());
+        assert_eq!(
+            crate::safe_paths::quarantine::read(&staging)
+                .unwrap()
+                .as_deref(),
+            Some(marker.as_slice())
+        );
+        fs::remove_dir_all(root).unwrap();
     }
 }
