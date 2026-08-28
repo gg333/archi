@@ -16,7 +16,13 @@
         "width": 980,
         "height": 680,
         "minWidth": 720,
-        "minHeight": 480
+        "minHeight": 480,
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true,
+        "trafficLightPosition": {
+          "x": 18,
+          "y": 20
+        }
       }
     ],
     "security": {
@@ -30,10 +36,28 @@
     "fileAssociations": [
       {
         "ext": [
-          "zip", "7z", "rar", "tar", "gz", "tgz", "bz2", "tbz2", "xz",
-          "txz", "zst", "cab", "iso", "lzh", "lha", "ar", "cpio", "001"
+          "zip",
+          "7z",
+          "rar",
+          "tar",
+          "gz",
+          "tgz",
+          "bz2",
+          "tbz2",
+          "xz",
+          "txz",
+          "zst",
+          "cab",
+          "iso",
+          "lzh",
+          "lha",
+          "ar",
+          "cpio",
+          "001"
         ],
-        "contentTypes": ["public.archive"],
+        "contentTypes": [
+          "public.archive"
+        ],
         "name": "Archive",
         "role": "Viewer",
         "rank": "Default"

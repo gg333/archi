@@ -132,6 +132,10 @@ export function entryPage(
   });
 }
 
+export function archiveFolders(path: string): Promise<string[]> {
+  return invoke("archive_folders", { path });
+}
+
 export function archiveChanged(path: string): Promise<boolean> {
   return invoke("archive_changed", { path });
 }

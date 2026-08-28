@@ -6,7 +6,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { confirm, open, save } from "@tauri-apps/plugin-dialog";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
 import {
-  addToArchive, archiveChanged, archiveError, cancelJob, clearDiagnostics, clearRecentArchives,
+  addToArchive, archiveChanged, archiveError, archiveFolders, cancelJob, clearDiagnostics, clearRecentArchives,
   createArchive, defaultZipOutput, deleteArchiveEntries, entryIcons, entryPage, exportDiagnostics,
   extractArchive, getSettings, jobStatus, openArchive, openArchiveEntry, openDestination, recentArchives,
   recordDiagnostic, renameArchiveEntry, resetSettings, saveSettings, setArchiveComment,
@@ -75,6 +75,10 @@ function App() {
   const [folder, setFolder] = useState("");
   const [folderHistory, setFolderHistory] = useState([""]);
   const [folderHistoryIndex, setFolderHistoryIndex] = useState(0);
+  const [folders, setFolders] = useState<string[]>([]);
+  const [sidebarVisible, setSidebarVisible] = useState(true);
+  const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
+  const [moreOpen, setMoreOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [sort, setSort] = useState<SortKey>("name");
   const [descending, setDescending] = useState(false);
@@ -157,7 +161,7 @@ function App() {
   }, [busy, settings]);
 
   useEffect(() => {
-    void getCurrentWindow().setTitle(archive ? `${archive.name} — Archi` : "Archi");
+    void getCurrentWindow().setTitle(archive ? archive.name : "Archi");
   }, [archive]);
 
   useEffect(() => {
@@ -194,6 +198,22 @@ function App() {
     }, query ? 150 : 0);
     return () => { active = false; window.clearTimeout(timer); };
   }, [archive, folder, query, sort, descending, pageNumber, settings.showHiddenEntries]);
+
+  useEffect(() => {
+    if (!archive) {
+      setFolders([]);
+      return;
+    }
+    let active = true;
+    void archiveFolders(archive.path)
+      .then((value) => {
+        if (!active) return;
+        setFolders(value);
+        setExpandedFolders(new Set(value.filter((path) => !path.includes("/"))));
+      })
+      .catch((caught) => active && setError(archiveError(caught)));
+    return () => { active = false; };
+  }, [archive]);
 
   useEffect(() => {
     if (!entries) return;
@@ -822,28 +842,57 @@ function App() {
   }
 
   const crumbs = folder ? folder.split("/") : [];
+  const folderTree = useMemo(() => buildFolderTree(folders), [folders]);
   return (
     <main className={`app-shell${dragActive ? " drag-active" : ""}`}>
-      <header className="app-header">
-        <div><p className="eyebrow">Local archive manager</p><h1>Archi</h1></div>
-        <div className="header-actions"><button onClick={openSettings} disabled={busy}>Settings</button><button onClick={openCreateDialog} disabled={busy}>New Archive</button><button className="primary-button" onClick={chooseArchive} disabled={busy}>Open Archive</button></div>
-      </header>
+      {!archive && <header className="welcome-toolbar" data-tauri-drag-region>
+        <div className="welcome-title" data-tauri-drag-region><strong>Archi</strong></div>
+        <div className="toolbar-actions"><button onClick={openCreateDialog} disabled={busy}>New Archive</button><button className="primary-button" onClick={chooseArchive} disabled={busy}>Open Archive</button></div>
+      </header>}
       {dragActive && <div className="drop-overlay" role="status">Drop an archive to open it, or files and folders to create one</div>}
       {error && <section className="error-banner" role="alert"><div><strong>{error.code.replace(/_/g, " ")}</strong><p>{error.message}</p></div><button className="icon-button" onClick={() => setError(null)} aria-label="Dismiss error">×</button></section>}
       {archiveOutdated && archive && <section className="change-banner" role="alert"><div><strong>Archive changed on disk</strong><p>Reload to browse the current file. No archive contents have been edited by this app.</p></div><div className="header-actions"><button onClick={() => { setArchiveOutdated(false); setMonitorChanges(false); }}>Keep browsing</button><button className="primary-button" onClick={() => void loadArchive(archive.path)}>Reload</button></div></section>}
       {job && <JobShelf job={job} onCancel={() => void requestCancellation()} />}
 
       {archive ? <section className="archive-panel" aria-busy={busy}>
-        <div className="archive-toolbar"><div className="archive-title"><span className="archive-icon" aria-hidden="true">▦</span><div><h2>{archive.name}</h2><p title={archive.path}>{archive.path}{archive.volumeCount > 1 ? ` · ${archive.volumeCount} volumes` : ""}</p></div></div><div className="extract-actions">{archive.canModify && <><button onClick={() => void chooseArchiveAdditions(false)} disabled={busy}>Add Files…</button><button onClick={() => void chooseArchiveAdditions(true)} disabled={busy}>Add Folder…</button>{selectedEntries.length === 1 && <button onClick={() => requestRename(selectedEntries[0])} disabled={busy}>Rename…</button>}{selected.size > 0 && <button className="danger-button" onClick={() => void requestDelete([...selected])} disabled={busy}>Delete</button>}{archive.path.toLowerCase().endsWith(".zip") && <button onClick={openCommentEditor} disabled={busy}>Comment…</button>}</>}<button onClick={requestTest} disabled={busy}>Test</button><button onClick={() => void requestExtraction(selected.size ? [...selected] : [])} disabled={busy}>{selected.size ? `Extract ${selected.size}` : "Extract All"}…</button></div></div>
-        <div className="browser-bar">
-          <div className="navigation-buttons" aria-label="Archive navigation"><button aria-label="Back" title="Back" onClick={() => moveHistory(folderHistoryIndex - 1)} disabled={folderHistoryIndex === 0}>‹</button><button aria-label="Forward" title="Forward" onClick={() => moveHistory(folderHistoryIndex + 1)} disabled={folderHistoryIndex >= folderHistory.length - 1}>›</button><button aria-label="Up one folder" title="Up one folder" onClick={goUp} disabled={!folder}>↑</button></div>
-          <nav className="breadcrumbs" aria-label="Archive folder"><button onClick={() => navigateFolder("")} aria-current={!folder ? "page" : undefined}>{archive.name}</button>{crumbs.map((crumb, index) => { const path = crumbs.slice(0, index + 1).join("/"); return <span key={path}><span aria-hidden="true">/</span><button onClick={() => navigateFolder(path)} aria-current={path === folder ? "page" : undefined}>{crumb}</button></span>; })}</nav>
-          <label className="search-field"><span className="sr-only">Search entry names</span><input ref={searchRef} type="search" value={query} onChange={(event) => { setQuery(event.target.value); setPageNumber(1); setSelected(new Set()); }} placeholder="Search names" /></label>
+        <div className="mac-toolbar" data-tauri-drag-region>
+          <div className="toolbar-nav">
+            <button className="toolbar-icon-button" aria-label="Back" title="Back" onClick={() => moveHistory(folderHistoryIndex - 1)} disabled={folderHistoryIndex === 0}>‹</button>
+            <button className="toolbar-icon-button" aria-label="Forward" title="Forward" onClick={() => moveHistory(folderHistoryIndex + 1)} disabled={folderHistoryIndex >= folderHistory.length - 1}>›</button>
+            <button className="toolbar-icon-button" aria-label="Up one folder" title="Up one folder" onClick={goUp} disabled={!folder}>↑</button>
+            <button className={`toolbar-icon-button${sidebarVisible ? " active" : ""}`} aria-label="Toggle sidebar" title="Toggle sidebar" onClick={() => setSidebarVisible((value) => !value)}>☷</button>
+          </div>
+          <div className="toolbar-document" data-tauri-drag-region><strong>{archive.name}</strong>{archive.volumeCount > 1 && <span>{archive.volumeCount} volumes</span>}</div>
+          <div className="toolbar-actions">
+            <label className="toolbar-search"><span className="sr-only">Search entry names</span><input ref={searchRef} type="search" value={query} onChange={(event) => { setQuery(event.target.value); setPageNumber(1); setSelected(new Set()); }} placeholder="Search" /></label>
+            {archive.canModify && <button onClick={() => void chooseArchiveAdditions(false)} disabled={busy}>+ Add</button>}
+            <button onClick={requestTest} disabled={busy}>✓ Test</button>
+            <button className="primary-button" onClick={() => void requestExtraction(selected.size ? [...selected] : [])} disabled={busy}>{selected.size ? `Extract ${selected.size}` : "Extract"}</button>
+            <div className="more-menu-wrap">
+              <button className="toolbar-icon-button" aria-label="More actions" title="More actions" onClick={() => setMoreOpen((value) => !value)}>•••</button>
+              {moreOpen && <div className="toolbar-more-menu" role="menu">
+                {archive.canModify && <button role="menuitem" onClick={() => { setMoreOpen(false); void chooseArchiveAdditions(true); }}>Add Folder…</button>}
+                {archive.canModify && selectedEntries.length === 1 && <button role="menuitem" onClick={() => { setMoreOpen(false); requestRename(selectedEntries[0]); }}>Rename…</button>}
+                {archive.canModify && selected.size > 0 && <button className="danger-button" role="menuitem" onClick={() => { setMoreOpen(false); void requestDelete([...selected]); }}>Delete</button>}
+                {archive.path.toLowerCase().endsWith(".zip") && <button role="menuitem" onClick={() => { setMoreOpen(false); openCommentEditor(); }}>Comment…</button>}
+                <button role="menuitem" onClick={() => { setMoreOpen(false); openSettings(); }}>Settings…</button>
+              </div>}
+            </div>
+          </div>
         </div>
-        <div className="table-wrap"><table><thead><tr><SortableHeader label="Name" value="name" current={sort} descending={descending} onSort={changeSort} /><th>Type</th><SortableHeader label="Size" value="size" current={sort} descending={descending} onSort={changeSort} /><SortableHeader label="Compressed" value="packedSize" current={sort} descending={descending} onSort={changeSort} /><SortableHeader label="Ratio" value="ratio" current={sort} descending={descending} onSort={changeSort} /><SortableHeader label="Modified" value="modified" current={sort} descending={descending} onSort={changeSort} /><th>Encrypted</th></tr></thead>
+        <div className="browser-bar">
+          <nav className="breadcrumbs" aria-label="Archive folder"><button onClick={() => navigateFolder("")} aria-current={!folder ? "page" : undefined}>{archive.name}</button>{crumbs.map((crumb, index) => { const path = crumbs.slice(0, index + 1).join("/"); return <span key={path}><span aria-hidden="true">/</span><button onClick={() => navigateFolder(path)} aria-current={path === folder ? "page" : undefined}>{crumb}</button></span>; })}</nav>
+        </div>
+        <div className={`browser-content${sidebarVisible ? " with-sidebar" : ""}`}>
+          {sidebarVisible && <aside className="folder-sidebar" aria-label="Archive folders">
+            <button className={`sidebar-root${folder === "" ? " active" : ""}`} onClick={() => navigateFolder("")}><span aria-hidden="true">▣</span><span>{archive.name}</span></button>
+            <FolderTree nodes={folderTree} activePath={folder} expanded={expandedFolders} onToggle={(path) => setExpandedFolders((current) => { const next = new Set(current); if (next.has(path)) next.delete(path); else next.add(path); return next; })} onNavigate={navigateFolder} />
+          </aside>}
+          <div className="table-wrap"><table><thead><tr><SortableHeader label="Name" value="name" current={sort} descending={descending} onSort={changeSort} /><th>Type</th><SortableHeader label="Size" value="size" current={sort} descending={descending} onSort={changeSort} /><SortableHeader label="Compressed" value="packedSize" current={sort} descending={descending} onSort={changeSort} /><SortableHeader label="Ratio" value="ratio" current={sort} descending={descending} onSort={changeSort} /><SortableHeader label="Modified" value="modified" current={sort} descending={descending} onSort={changeSort} /><th>Encrypted</th></tr></thead>
           <tbody>{entries?.entries.map((entry, index) => <tr key={entry.path} data-entry={entry.path} tabIndex={index === 0 || selected.has(entry.path) ? 0 : -1} aria-selected={selected.has(entry.path)} aria-label={entryLabel(entry)} className={selected.has(entry.path) ? "selected" : undefined} onClick={(event) => selectEntry(event, entry)} onKeyDown={(event) => handleRowKey(event, index, entry)} onDoubleClick={() => entry.isDirectory ? navigateFolder(entry.path) : void requestEntryOpen(entry, false)} onContextMenu={(event) => { event.preventDefault(); setSelected(new Set([entry.path])); setEntryMenu(contextMenuPosition(event, entry)); }} title={entry.isDirectory ? "Double-click to open; right-click for actions" : "Double-click to open; press Spacebar for Quick Look"}>
             <td className="entry-name" title={entry.path}><EntryIcon entry={entry} source={nativeIcons[entryIconKey(entry)]} />{leafName(entry.path)}{query && parentEntryPath(entry.path) && <small>{parentEntryPath(entry.path)}</small>}</td><td>{entry.isLink ? "Link" : entry.isDirectory ? "Folder" : entry.method ?? "File"}</td><td>{entry.size === null ? "—" : formatBytes(entry.size)}</td><td>{entry.packedSize === null ? "—" : formatBytes(entry.packedSize)}</td><td>{formatRatio(entry)}</td><td>{entry.modified ?? "—"}</td><td>{entry.encrypted ? "Yes" : "No"}</td>
           </tr>)}{entries?.total === 0 && <tr><td colSpan={7} className="no-results">No entries match this view.</td></tr>}</tbody></table></div>
+        </div>
         <footer className="status-bar"><span aria-live="polite">{status}</span><div className="page-controls"><span>{selected.size ? `${selected.size.toLocaleString()} selected · ${formatBytes(selectedSize)} · ` : ""}{entries ? `${entries.total.toLocaleString()} items · Page ${entries.page} of ${entries.totalPages}` : "Loading…"}</span><button aria-label="Previous page" onClick={() => setPageNumber((value) => Math.max(1, value - 1))} disabled={!entries || entries.page <= 1}>‹</button><button aria-label="Next page" onClick={() => setPageNumber((value) => value + 1)} disabled={!entries || entries.page >= entries.totalPages}>›</button></div></footer>
       </section> : <section className="empty-state"><div className="empty-icon" aria-hidden="true">▦</div><h2>Open or create an archive</h2><p>Browse and create archives locally without uploading anything. You can also drop files here.</p><div className="header-actions"><button onClick={openCreateDialog} disabled={busy}>New Archive…</button><button onClick={chooseArchive} disabled={busy}>Choose Archive…</button></div>{settings.historyEnabled && recents.length > 0 && <div className="recent-list"><strong>Recent archives</strong>{recents.map((path) => <button key={path} onClick={() => void loadArchive(path)} title={path}><span>{leafName(path)}</span><small>{parentPath(path)}</small></button>)}</div>}<span role="status">{status}</span></section>}
 
@@ -858,6 +907,39 @@ function App() {
       {settingsOpen && <Modal className="settings-dialog" labelledBy="settings-title" onClose={() => setSettingsOpen(false)}><form className="modal-form" onSubmit={submitSettings}><h2 id="settings-title">Settings</h2><fieldset><legend>Defaults</legend><div className="form-grid"><label>Archive format<select value={settingsDraft.defaultFormat} onChange={(event) => setSettingsDraft({ ...settingsDraft, defaultFormat: event.target.value as ArchiveFormat })}>{createFormats.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label><label>ZIP compression<select value={settingsDraft.zipCompression} onChange={(event) => setSettingsDraft({ ...settingsDraft, zipCompression: event.target.value as CompressionLevel })}><option value="store">Store</option><option value="fast">Fast</option><option value="normal">Normal</option><option value="maximum">Maximum</option></select></label><label>7z compression<select value={settingsDraft.sevenZipCompression} onChange={(event) => setSettingsDraft({ ...settingsDraft, sevenZipCompression: event.target.value as CompressionLevel })}><option value="store">Store</option><option value="fast">Fast</option><option value="normal">Normal</option><option value="maximum">Maximum</option></select></label></div><label>Extraction destination<select value={settingsDraft.extractionDestination} onChange={(event) => setSettingsDraft({ ...settingsDraft, extractionDestination: event.target.value as Settings["extractionDestination"] })}><option value="ask">Ask every time</option><option value="sibling">Folder beside archive</option><option value="custom">Custom folder</option></select></label>{settingsDraft.extractionDestination === "custom" && <div className="output-picker"><input readOnly value={settingsDraft.customDestination ?? ""} placeholder="Choose a folder" /><button type="button" onClick={chooseCustomDestination}>Choose…</button></div>}</fieldset><fieldset><legend>Completion and browsing</legend><label className="checkbox-label"><input type="checkbox" checked={settingsDraft.revealOnCompletion} onChange={(event) => setSettingsDraft({ ...settingsDraft, revealOnCompletion: event.target.checked })} />Open destination after extraction</label><label className="checkbox-label"><input type="checkbox" checked={settingsDraft.notifications} onChange={(event) => setSettingsDraft({ ...settingsDraft, notifications: event.target.checked })} />Completion notifications</label><label className="checkbox-label"><input type="checkbox" checked={settingsDraft.showHiddenEntries} onChange={(event) => setSettingsDraft({ ...settingsDraft, showHiddenEntries: event.target.checked })} />Show hidden archive entries</label><label>Maximum declared extraction size<select value={settingsDraft.maxExpandedBytes} onChange={(event) => setSettingsDraft({ ...settingsDraft, maxExpandedBytes: Number(event.target.value) })}><option value={1024 ** 3}>1 GiB</option><option value={10 * 1024 ** 3}>10 GiB</option><option value={100 * 1024 ** 3}>100 GiB</option><option value={1024 ** 4}>1 TiB</option></select></label><label>Maximum temporary preview size<select value={settingsDraft.maxPreviewBytes} onChange={(event) => setSettingsDraft({ ...settingsDraft, maxPreviewBytes: Number(event.target.value) })}><option value={10 * 1024 ** 2}>10 MiB</option><option value={100 * 1024 ** 2}>100 MiB</option><option value={500 * 1024 ** 2}>500 MiB</option><option value={1024 ** 3}>1 GiB</option></select></label></fieldset><fieldset><legend>Finder integration</legend><p>{integration?.available && integration.providerRegistered ? `${integration.documentExtensions} archive extensions and ${integration.serviceActions} Finder Services are installed.` : integration ? "Finder integration is unavailable in this build." : "Checking Finder integration…"}</p><p>Service visibility can be enabled or disabled in macOS System Settings → Keyboard → Keyboard Shortcuts → Services.</p><button type="button" onClick={refreshIntegration}>Refresh Status</button></fieldset><fieldset><legend>Privacy and diagnostics</legend><label className="checkbox-label"><input type="checkbox" checked={settingsDraft.historyEnabled} onChange={(event) => setSettingsDraft({ ...settingsDraft, historyEnabled: event.target.checked })} />Remember recent archives on this Mac</label><p>Recent archive paths stay in this user account and are deleted when history is disabled.</p><div className="header-actions"><button type="button" onClick={clearHistory} disabled={!recents.length}>Clear History…</button><button type="button" onClick={exportLocalDiagnostics}>Export Diagnostics…</button><button type="button" className="danger-button" onClick={clearLocalDiagnostics}>Clear Logs…</button></div><p>Local diagnostics contain app, OS, architecture, engine version, operation, and error codes—never passwords, file contents, or entry lists.</p></fieldset><div className="modal-actions"><button type="button" onClick={restoreSettings}>Reset Defaults</button><span className="modal-spacer" /><button type="button" onClick={() => setSettingsOpen(false)}>Cancel</button><button className="primary-button" type="submit">Save Settings</button></div></form></Modal>}
     </main>
   );
+}
+
+interface FolderTreeNode { name: string; path: string; children: FolderTreeNode[] }
+function buildFolderTree(paths: string[]): FolderTreeNode[] {
+  const roots: FolderTreeNode[] = [];
+  const nodes = new Map<string, FolderTreeNode>();
+  for (const path of paths) {
+    const parts = path.split("/").filter(Boolean);
+    let parent: FolderTreeNode | null = null;
+    for (let index = 0; index < parts.length; index += 1) {
+      const currentPath = parts.slice(0, index + 1).join("/");
+      let node = nodes.get(currentPath);
+      if (!node) {
+        node = { name: parts[index], path: currentPath, children: [] };
+        nodes.set(currentPath, node);
+        if (parent) parent.children.push(node); else roots.push(node);
+      }
+      parent = node;
+    }
+  }
+  return roots;
+}
+function FolderTree({ nodes, activePath, expanded, onToggle, onNavigate, depth = 0 }: { nodes: FolderTreeNode[]; activePath: string; expanded: Set<string>; onToggle: (path: string) => void; onNavigate: (path: string) => void; depth?: number }) {
+  return <>{nodes.map((node) => {
+    const isExpanded = expanded.has(node.path);
+    return <div key={node.path}>
+      <div className={`sidebar-row${activePath === node.path ? " active" : ""}`} style={{ paddingLeft: `${10 + depth * 14}px` }}>
+        <button className="disclosure" aria-label={`${isExpanded ? "Collapse" : "Expand"} ${node.name}`} onClick={() => node.children.length && onToggle(node.path)} disabled={!node.children.length}>{node.children.length ? (isExpanded ? "▾" : "▸") : ""}</button>
+        <button className="sidebar-folder" onClick={() => onNavigate(node.path)}><span aria-hidden="true">📁</span><span>{node.name}</span></button>
+      </div>
+      {node.children.length > 0 && isExpanded && <FolderTree nodes={node.children} activePath={activePath} expanded={expanded} onToggle={onToggle} onNavigate={onNavigate} depth={depth + 1} />}
+    </div>;
+  })}</>;
 }
 
 function SortableHeader({ label, value, current, descending, onSort }: { label: string; value: SortKey; current: SortKey; descending: boolean; onSort: (value: SortKey) => void }) {

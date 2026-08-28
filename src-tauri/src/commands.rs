@@ -593,6 +593,14 @@ pub(crate) async fn entry_page(
 }
 
 #[tauri::command]
+pub(crate) fn archive_folders(
+    archives: tauri::State<'_, ArchiveStore>,
+    path: String,
+) -> Result<Vec<String>, ArchiveError> {
+    archives.folders(&path)
+}
+
+#[tauri::command]
 pub(crate) fn archive_changed(
     archives: tauri::State<'_, ArchiveStore>,
     path: String,

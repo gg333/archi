@@ -300,6 +300,7 @@ pub fn run() {
             commands::set_archive_comment,
             commands::test_archive,
             commands::entry_page,
+            commands::archive_folders,
             commands::archive_changed,
             commands::job_status,
             commands::open_destination,

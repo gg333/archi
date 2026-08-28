@@ -2,7 +2,7 @@ use crate::archive::{ArchiveEntry, ArchiveError};
 use serde::{Deserialize, Serialize};
 use std::{
     cmp::Ordering,
-    collections::{BTreeMap, HashSet},
+    collections::{BTreeMap, BTreeSet, HashSet},
     fs,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
@@ -110,6 +110,22 @@ impl ArchiveStore {
             page_size,
             show_hidden,
         ))
+    }
+
+    pub(crate) fn folders(&self, path: &str) -> Result<Vec<String>, ArchiveError> {
+        let guard = self.0.lock().map_err(lock_error)?;
+        let archive = current(&guard, path)?;
+        let mut folders = BTreeSet::new();
+        for entry in &archive.entries {
+            let parts = entry.path.split('/').collect::<Vec<_>>();
+            let parent_count = parts
+                .len()
+                .saturating_sub(if entry.is_directory { 0 } else { 1 });
+            for length in 1..=parent_count {
+                folders.insert(parts[..length].join("/"));
+            }
+        }
+        Ok(folders.into_iter().collect())
     }
 
     pub(crate) fn changed(&self, path: &str) -> Result<bool, ArchiveError> {
