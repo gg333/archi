@@ -103,6 +103,7 @@ pub(crate) async fn start_extract(
                 staging.path(),
                 &selected,
                 password,
+                (!allow_unbounded).then_some(max_expanded_bytes),
             )?;
             let CommitSummary {
                 files_extracted,
@@ -171,6 +172,7 @@ pub(crate) async fn open_archive_entry(
             staging.path(),
             &selected,
             password,
+            Some(preview_limit),
         )?;
         let preview =
             safe_paths::persist_preview_file(staging.path(), &entry, &preview_root, preview_limit)?;

@@ -1,6 +1,7 @@
 use crate::archive::{
     self, ArchiveError, ArchiveFormat, CompressionLevel, CreationPlan, DeletionPlan, RenamePlan,
 };
+use crate::safe_paths;
 use serde::Serialize;
 use std::{
     fs::File,
@@ -225,13 +226,24 @@ impl JobControl {
         Ok(())
     }
 
-    fn wait(&self, stdout: &mut File, stderr: &mut File) -> Result<ExitStatus, ArchiveError> {
+    fn wait(
+        &self,
+        stdout: &mut File,
+        stderr: &mut File,
+        mut monitor: impl FnMut() -> Result<(), ArchiveError>,
+    ) -> Result<ExitStatus, ArchiveError> {
         loop {
             self.read_progress(stdout, stderr)?;
             let mut slot = self.child.lock().map_err(lock_error)?;
             let child = slot.as_mut().ok_or_else(|| {
                 ArchiveError::new("internal_error", "Archive worker was not started")
             })?;
+            if let Err(error) = monitor() {
+                let _ = child.kill();
+                let _ = child.wait();
+                slot.take();
+                return Err(error);
+            }
             if let Some(status) = child.try_wait().map_err(|error| {
                 ArchiveError::new(
                     "engine_unavailable",
@@ -319,18 +331,32 @@ pub(crate) fn run_extract(
     staging: &Path,
     entries: &[String],
     password: Option<&str>,
+    max_bytes: Option<u64>,
 ) -> Result<JobOutcome, ArchiveError> {
-    run_worker(control, |stdout, stderr| {
-        archive::spawn_extract_entries(
-            binary,
-            archive_path,
-            staging,
-            entries,
-            password,
-            stdout,
-            stderr,
-        )
-    })
+    let mut last_check = Instant::now();
+    let outcome = run_worker(
+        control,
+        || {
+            if last_check.elapsed() >= Duration::from_millis(200) {
+                safe_paths::enforce_staging_limits(staging, max_bytes)?;
+                last_check = Instant::now();
+            }
+            Ok(())
+        },
+        |stdout, stderr| {
+            archive::spawn_extract_entries(
+                binary,
+                archive_path,
+                staging,
+                entries,
+                password,
+                stdout,
+                stderr,
+            )
+        },
+    )?;
+    safe_paths::enforce_staging_limits(staging, max_bytes)?;
+    Ok(outcome)
 }
 
 #[allow(clippy::too_many_arguments)] // Keep the job wrapper aligned with the archive process.
@@ -344,18 +370,22 @@ pub(crate) fn run_create(
     volume_size: Option<u64>,
     password: Option<&str>,
 ) -> Result<JobOutcome, ArchiveError> {
-    run_worker(control, |stdout, stderr| {
-        archive::spawn_create(
-            binary,
-            archive_path,
-            plan,
-            format,
-            compression,
-            volume_size,
-            password,
-            (stdout, stderr),
-        )
-    })
+    run_worker(
+        control,
+        || Ok(()),
+        |stdout, stderr| {
+            archive::spawn_create(
+                binary,
+                archive_path,
+                plan,
+                format,
+                compression,
+                volume_size,
+                password,
+                (stdout, stderr),
+            )
+        },
+    )
 }
 
 pub(crate) fn run_create_tar(
@@ -365,9 +395,13 @@ pub(crate) fn run_create_tar(
     plan: &CreationPlan,
     compression: CompressionLevel,
 ) -> Result<JobOutcome, ArchiveError> {
-    run_worker(control, |stdout, stderr| {
-        archive::spawn_create_tar(binary, archive_path, plan, compression, (stdout, stderr))
-    })
+    run_worker(
+        control,
+        || Ok(()),
+        |stdout, stderr| {
+            archive::spawn_create_tar(binary, archive_path, plan, compression, (stdout, stderr))
+        },
+    )
 }
 
 pub(crate) fn run_compress_stream(
@@ -378,16 +412,20 @@ pub(crate) fn run_compress_stream(
     format: ArchiveFormat,
     compression: CompressionLevel,
 ) -> Result<JobOutcome, ArchiveError> {
-    run_worker(control, |stdout, stderr| {
-        archive::spawn_compress_stream(
-            binary,
-            archive_path,
-            source,
-            format,
-            compression,
-            (stdout, stderr),
-        )
-    })
+    run_worker(
+        control,
+        || Ok(()),
+        |stdout, stderr| {
+            archive::spawn_compress_stream(
+                binary,
+                archive_path,
+                source,
+                format,
+                compression,
+                (stdout, stderr),
+            )
+        },
+    )
 }
 
 pub(crate) fn run_zstd(
@@ -414,9 +452,11 @@ pub(crate) fn run_test(
     archive_path: &Path,
     password: Option<&str>,
 ) -> Result<JobOutcome, ArchiveError> {
-    run_worker(control, |stdout, stderr| {
-        archive::spawn_test(binary, archive_path, password, stdout, stderr)
-    })
+    run_worker(
+        control,
+        || Ok(()),
+        |stdout, stderr| archive::spawn_test(binary, archive_path, password, stdout, stderr),
+    )
 }
 
 pub(crate) fn run_delete(
@@ -426,9 +466,13 @@ pub(crate) fn run_delete(
     plan: &DeletionPlan,
     password: Option<&str>,
 ) -> Result<JobOutcome, ArchiveError> {
-    run_worker(control, |stdout, stderr| {
-        archive::spawn_delete(binary, archive_path, plan, password, stdout, stderr)
-    })
+    run_worker(
+        control,
+        || Ok(()),
+        |stdout, stderr| {
+            archive::spawn_delete(binary, archive_path, plan, password, stdout, stderr)
+        },
+    )
 }
 
 pub(crate) fn run_rename(
@@ -438,13 +482,18 @@ pub(crate) fn run_rename(
     plan: &RenamePlan,
     password: Option<&str>,
 ) -> Result<JobOutcome, ArchiveError> {
-    run_worker(control, |stdout, stderr| {
-        archive::spawn_rename(binary, archive_path, plan, password, stdout, stderr)
-    })
+    run_worker(
+        control,
+        || Ok(()),
+        |stdout, stderr| {
+            archive::spawn_rename(binary, archive_path, plan, password, stdout, stderr)
+        },
+    )
 }
 
 fn run_worker(
     control: &Arc<JobControl>,
+    monitor: impl FnMut() -> Result<(), ArchiveError>,
     spawn: impl FnOnce(Stdio, Stdio) -> Result<Child, ArchiveError>,
 ) -> Result<JobOutcome, ArchiveError> {
     control.prepare_stage();
@@ -458,7 +507,7 @@ fn run_worker(
         Stdio::from(stderr.reopen().map_err(log_error)?),
     )?;
     control.install(child)?;
-    let status = control.wait(stdout.as_file_mut(), stderr.as_file_mut())?;
+    let status = control.wait(stdout.as_file_mut(), stderr.as_file_mut(), monitor)?;
     let stdout = read_log(stdout.as_file_mut())?;
     let stderr = read_log(stderr.as_file_mut())?;
     if control.cancelled() {
@@ -637,11 +686,35 @@ mod tests {
         assert!(manager.cancel().unwrap());
         let mut stdout = tempfile::tempfile().unwrap();
         let mut stderr = tempfile::tempfile().unwrap();
-        assert!(!control.wait(&mut stdout, &mut stderr).unwrap().success());
+        assert!(!control
+            .wait(&mut stdout, &mut stderr, || Ok(()))
+            .unwrap()
+            .success());
         assert!(control.cancelled());
         assert!(started.elapsed() < Duration::from_secs(2));
         assert_eq!(fs::read_to_string(existing).unwrap(), "keep me");
         manager.finish(&control);
         assert!(manager.begin("test", 0).is_ok());
+    }
+
+    #[test]
+    fn worker_is_stopped_when_an_active_limit_fails() {
+        let manager = JobManager::default();
+        let control = manager.begin("extract", 100).unwrap();
+        let child = Command::new(archive::bundled_engine().unwrap())
+            .args(["b", "-bsp1"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        control.install(child).unwrap();
+        let mut stdout = tempfile::tempfile().unwrap();
+        let mut stderr = tempfile::tempfile().unwrap();
+        let error = control
+            .wait(&mut stdout, &mut stderr, || {
+                Err(ArchiveError::new("expansion_limit_exceeded", "limit"))
+            })
+            .unwrap_err();
+        assert_eq!(error.code, "expansion_limit_exceeded");
     }
 }

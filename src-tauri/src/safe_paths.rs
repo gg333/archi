@@ -15,6 +15,8 @@ const STAGING_PREFIX: &str = "archive-app-extract-";
 const STAGING_LOCK: &str = ".archive-app-staging.lock";
 const PREVIEW_PREFIX: &str = "preview-";
 const PREVIEW_MARKER: &str = ".archi-preview";
+const MAX_ARCHIVE_ENTRIES: usize = 1_000_000;
+const MAX_ARCHIVE_DEPTH: usize = 100;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -465,9 +467,15 @@ pub fn validate_staging(root: &Path) -> Result<(), ArchiveError> {
             "The extraction staging path is not a real folder",
         ));
     }
-    let mut logical = Vec::new();
-    collect_staged_entries(root, root, &mut logical)?;
+    let logical = inspect_staging(root, None, true)?;
     validate_logical_entries(&logical)
+}
+
+pub(crate) fn enforce_staging_limits(
+    root: &Path,
+    max_bytes: Option<u64>,
+) -> Result<(), ArchiveError> {
+    inspect_staging(root, max_bytes, false).map(|_| ())
 }
 
 pub fn commit_staging(
@@ -633,6 +641,12 @@ struct LogicalEntry {
 }
 
 fn validate_logical_entries(entries: &[LogicalEntry]) -> Result<(), ArchiveError> {
+    if entries.len() > MAX_ARCHIVE_ENTRIES {
+        return Err(ArchiveError::new(
+            "entry_limit_exceeded",
+            format!("This archive contains more than {MAX_ARCHIVE_ENTRIES} entries"),
+        ));
+    }
     let mut normalized = Vec::with_capacity(entries.len());
     for entry in entries {
         if entry.is_link {
@@ -642,6 +656,15 @@ fn validate_logical_entries(entries: &[LogicalEntry]) -> Result<(), ArchiveError
             ));
         }
         let components = safe_components(&entry.path)?;
+        if components.len() > MAX_ARCHIVE_DEPTH {
+            return Err(ArchiveError::new(
+                "path_depth_exceeded",
+                format!(
+                    "Archive paths cannot be deeper than {MAX_ARCHIVE_DEPTH} folders: {}",
+                    entry.path
+                ),
+            ));
+        }
         let key = components
             .iter()
             .map(|component| portable_key(component))
@@ -727,39 +750,72 @@ fn portable_key(component: &str) -> String {
     component.nfc().flat_map(char::to_lowercase).collect()
 }
 
-fn collect_staged_entries(
+fn inspect_staging(
     root: &Path,
-    current: &Path,
-    entries: &mut Vec<LogicalEntry>,
-) -> Result<(), ArchiveError> {
-    for path in sorted_children(current)? {
-        let metadata = fs::symlink_metadata(&path).map_err(path_io_error)?;
-        let relative = path.strip_prefix(root).map_err(|_| {
-            ArchiveError::new("destination_escape", "An extracted path escaped staging")
-        })?;
-        let display = relative.to_str().ok_or_else(|| {
-            ArchiveError::new(
-                "unsafe_path",
-                "An extracted file name could not be represented as Unicode",
-            )
-        })?;
-        let is_link = metadata.file_type().is_symlink() || is_hard_link(&metadata);
-        if !metadata.is_dir() && !metadata.is_file() && !is_link {
-            return Err(ArchiveError::new(
-                "unsafe_file_type",
-                format!("Special files are disabled: {display}"),
-            ));
-        }
-        entries.push(LogicalEntry {
-            path: display.to_string(),
-            is_directory: metadata.is_dir(),
-            is_link,
-        });
-        if metadata.is_dir() && !is_link {
-            collect_staged_entries(root, &path, entries)?;
+    max_bytes: Option<u64>,
+    collect_entries: bool,
+) -> Result<Vec<LogicalEntry>, ArchiveError> {
+    let mut entries = Vec::new();
+    let mut stack = vec![(root.to_path_buf(), 0_usize)];
+    let mut count = 0_usize;
+    let mut total_bytes = 0_u64;
+    while let Some((current, depth)) = stack.pop() {
+        for path in sorted_children(&current)? {
+            let metadata = fs::symlink_metadata(&path).map_err(path_io_error)?;
+            let relative = path.strip_prefix(root).map_err(|_| {
+                ArchiveError::new("destination_escape", "An extracted path escaped staging")
+            })?;
+            let display = relative.to_str().ok_or_else(|| {
+                ArchiveError::new(
+                    "unsafe_path",
+                    "An extracted file name could not be represented as Unicode",
+                )
+            })?;
+            let is_link = metadata.file_type().is_symlink() || is_hard_link(&metadata);
+            if !metadata.is_dir() && !metadata.is_file() && !is_link {
+                return Err(ArchiveError::new(
+                    "unsafe_file_type",
+                    format!("Special files are disabled: {display}"),
+                ));
+            }
+            count += 1;
+            if count > MAX_ARCHIVE_ENTRIES {
+                return Err(ArchiveError::new(
+                    "entry_limit_exceeded",
+                    format!("Extraction produced more than {MAX_ARCHIVE_ENTRIES} entries"),
+                ));
+            }
+            let entry_depth = depth + 1;
+            if entry_depth > MAX_ARCHIVE_DEPTH {
+                return Err(ArchiveError::new(
+                    "path_depth_exceeded",
+                    format!("Extraction produced a path deeper than {MAX_ARCHIVE_DEPTH} folders"),
+                ));
+            }
+            if metadata.is_file() {
+                total_bytes = total_bytes.saturating_add(metadata.len());
+                if let Some(limit) = max_bytes.filter(|limit| total_bytes > *limit) {
+                    return Err(ArchiveError::new(
+                    "expansion_limit_exceeded",
+                    format!(
+                        "Extraction produced {total_bytes} bytes, above the configured {limit}-byte limit"
+                    ),
+                ));
+                }
+            }
+            if collect_entries {
+                entries.push(LogicalEntry {
+                    path: display.to_string(),
+                    is_directory: metadata.is_dir(),
+                    is_link,
+                });
+            }
+            if metadata.is_dir() && !is_link {
+                stack.push((path, entry_depth));
+            }
         }
     }
-    Ok(())
+    Ok(entries)
 }
 
 #[cfg(unix)]
@@ -1216,32 +1272,44 @@ fn has_executable_extension(path: &str) -> bool {
         matches!(
             extension.as_str(),
             "app"
+                | "applescript"
                 | "bat"
                 | "bash"
                 | "bin"
+                | "bundle"
                 | "cmd"
                 | "com"
                 | "command"
                 | "csh"
                 | "desktop"
+                | "dmg"
                 | "exe"
                 | "fish"
+                | "inetloc"
                 | "jar"
                 | "js"
                 | "jse"
                 | "ksh"
+                | "mobileconfig"
                 | "msi"
                 | "msp"
+                | "mpkg"
                 | "php"
+                | "pkg"
                 | "pl"
+                | "plugin"
                 | "ps1"
                 | "py"
                 | "pyw"
                 | "rb"
                 | "run"
+                | "scpt"
                 | "scr"
                 | "sh"
+                | "url"
                 | "vbs"
+                | "webloc"
+                | "workflow"
                 | "wsf"
                 | "zsh"
         )
@@ -1389,6 +1457,12 @@ mod tests {
                 .code,
             "preview_executable_blocked"
         );
+        assert_eq!(
+            validate_preview_entry(&preview_entry("installer.pkg", Some(1)), 100)
+                .unwrap_err()
+                .code,
+            "preview_executable_blocked"
+        );
         fs::remove_dir_all(&staging).unwrap();
         fs::create_dir_all(&staging).unwrap();
         fs::write(staging.join("payload"), b"\xcf\xfa\xed\xfecontents").unwrap();
@@ -1483,11 +1557,34 @@ mod tests {
         let rewrite = ArchiveRewrite::create(&source).unwrap();
         let recovery = rewrite.path().to_path_buf();
         fs::write(rewrite.path(), "candidate").unwrap();
-        fs::write(&source, "external change").unwrap();
+        fs::write(&source, "external!!!").unwrap();
         let error = rewrite.commit().unwrap_err();
         assert_eq!(error.code, "archive_changed");
-        assert_eq!(fs::read_to_string(&source).unwrap(), "external change");
+        assert_eq!(fs::read_to_string(&source).unwrap(), "external!!!");
         assert_eq!(fs::read_to_string(recovery).unwrap(), "candidate");
+    }
+
+    #[test]
+    fn extraction_limits_use_actual_files_and_reject_deep_paths() {
+        let staging = tempfile::tempdir().unwrap();
+        fs::write(staging.path().join("payload.bin"), [0_u8; 8]).unwrap();
+        assert_eq!(
+            enforce_staging_limits(staging.path(), Some(7))
+                .unwrap_err()
+                .code,
+            "expansion_limit_exceeded"
+        );
+
+        let deep = format!(
+            "{}/payload.txt",
+            vec!["folder"; MAX_ARCHIVE_DEPTH].join("/")
+        );
+        assert_eq!(
+            validate_archive_entries(&[preview_entry(&deep, Some(1))])
+                .unwrap_err()
+                .code,
+            "path_depth_exceeded"
+        );
     }
 
     #[cfg(target_os = "macos")]
