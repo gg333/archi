@@ -46,8 +46,8 @@ See [Supported formats](SUPPORTED_FORMATS.md), [Known limitations](KNOWN_LIMITAT
 ## Verification
 
 - Final artifact: `Archi_0.4.0_universal.dmg`
-- SHA-256: `PENDING_FINAL_ARTIFACT`
-- Apple notarization: `PENDING_FINAL_ARTIFACT`
+- SHA-256: `5c0c071d0948379010b33d4be94aa82546c4e96d421ed917c16f7d9a82906a69`
+- Apple notarization: app submission `0da4daf5-56d0-431b-90dd-a333070f01c4` and DMG submission `6859ab5f-2ed2-4935-af1a-277efe14b9b2`, both accepted
 - TypeScript/Vite production build and frontend tests
 - Rust formatting, strict Clippy, unit, engine-contract, and security tests
 - 100,000-entry listing and 1,000-operation real-engine stress gates
