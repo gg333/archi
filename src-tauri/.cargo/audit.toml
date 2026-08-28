@@ -1,0 +1,4 @@
+[advisories]
+# This exact release is locally patched with the upstream fix. See:
+# ../../third_party/patched-crates/README.md
+ignore = ["RUSTSEC-2024-0429"]

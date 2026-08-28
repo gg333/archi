@@ -1,16 +1,18 @@
 {
   "name": "archive-app",
   "private": true,
-  "version": "0.3.0",
+  "version": "0.3.1",
   "license": "MIT",
   "type": "module",
   "packageManager": "pnpm@11.1.2",
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
+    "test": "vitest run",
     "preview": "vite preview",
     "bundle:macos": "pnpm notices && tauri build --bundles dmg",
     "release:macos": "pnpm notices && node scripts/check-macos-release.mjs && tauri build --bundles dmg",
+    "verify:macos": "node scripts/verify-macos-release.mjs",
     "notices": "node scripts/generate-third-party-notices.mjs",
     "tauri": "tauri"
   },
@@ -23,10 +25,13 @@
   },
   "devDependencies": {
     "@tauri-apps/cli": "2.11.4",
+    "@testing-library/react": "16.3.2",
     "@types/react": "19.2.18",
     "@types/react-dom": "19.2.5",
     "@vitejs/plugin-react": "4.7.0",
+    "jsdom": "30.0.1",
     "typescript": "5.8.3",
-    "vite": "7.3.6"
+    "vite": "7.3.6",
+    "vitest": "4.1.11"
   }
 }
