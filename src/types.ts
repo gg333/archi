@@ -34,6 +34,12 @@ export interface EntryPage {
   totalPages: number;
 }
 
+export interface ArchiveFolder {
+  path: string;
+  name: string;
+  hasChildren: boolean;
+}
+
 export interface ExtractResult {
   destination: string;
   filesExtracted: number;

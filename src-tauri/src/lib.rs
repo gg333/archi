@@ -184,6 +184,8 @@ pub fn run() {
     const ABOUT_MENU_ID: &str = "about-archi";
     const NEW_ARCHIVE_MENU_ID: &str = "new-archive";
     const OPEN_ARCHIVE_MENU_ID: &str = "open-archive";
+    const OPEN_RECENT_MENU_ID: &str = "open-recent";
+    const CLOSE_ARCHIVE_MENU_ID: &str = "close-archive";
     const SETTINGS_MENU_ID: &str = "settings";
 
     let app = tauri::Builder::default()
@@ -229,6 +231,20 @@ pub fn run() {
                             true,
                             Some("CmdOrCtrl+O"),
                         )?;
+                        let open_recent = MenuItem::with_id(
+                            app,
+                            OPEN_RECENT_MENU_ID,
+                            "Open Recent…",
+                            true,
+                            None::<&str>,
+                        )?;
+                        let close_archive = MenuItem::with_id(
+                            app,
+                            CLOSE_ARCHIVE_MENU_ID,
+                            "Close Archive",
+                            true,
+                            None::<&str>,
+                        )?;
                         let settings = MenuItem::with_id(
                             app,
                             SETTINGS_MENU_ID,
@@ -242,6 +258,8 @@ pub fn run() {
                             &[
                                 &new_archive,
                                 &open_archive,
+                                &open_recent,
+                                &close_archive,
                                 &first_separator,
                                 &settings,
                                 &second_separator,
@@ -260,6 +278,8 @@ pub fn run() {
                 ABOUT_MENU_ID => Some("about"),
                 NEW_ARCHIVE_MENU_ID => Some("new-archive"),
                 OPEN_ARCHIVE_MENU_ID => Some("open-archive"),
+                OPEN_RECENT_MENU_ID => Some("open-recent"),
+                CLOSE_ARCHIVE_MENU_ID => Some("close-archive"),
                 SETTINGS_MENU_ID => Some("settings"),
                 _ => None,
             };

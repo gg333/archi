@@ -13,13 +13,14 @@ import {
   shellIntegrationStatus, takeShellRequests, testArchive,
 } from "./api";
 import type {
-  ArchiveDocument, ArchiveEntry, ArchiveError, ArchiveFormat, CompressionLevel,
+  ArchiveDocument, ArchiveEntry, ArchiveError, ArchiveFolder, ArchiveFormat, CompressionLevel,
   ConflictPolicy, EntryPage, JobSnapshot, Settings, ShellIntegrationStatus,
   ShellRequest, SortKey,
 } from "./types";
 import "./App.css";
 import { Modal } from "./components/Modal";
 import { ExtractDialog as ExtractPanel, JobShelf, PasswordDialog } from "./components/OperationPanels";
+import { PopupMenu } from "./components/PopupMenu";
 import { drainShellRequests } from "./shellRequests";
 import appIcon from "../src-tauri/icons/128x128@2x.png";
 
@@ -75,9 +76,11 @@ function App() {
   const [folder, setFolder] = useState("");
   const [folderHistory, setFolderHistory] = useState([""]);
   const [folderHistoryIndex, setFolderHistoryIndex] = useState(0);
-  const [folders, setFolders] = useState<string[]>([]);
+  const [folderChildren, setFolderChildren] = useState<Record<string, ArchiveFolder[]>>({});
   const [sidebarVisible, setSidebarVisible] = useState(true);
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
+  const [addMenuOpen, setAddMenuOpen] = useState(false);
+  const [extractMenuOpen, setExtractMenuOpen] = useState(false);
   const [moreOpen, setMoreOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [sort, setSort] = useState<SortKey>("name");
@@ -115,6 +118,7 @@ function App() {
   const [settings, setSettings] = useState<Settings>(defaultSettings);
   const [settingsDraft, setSettingsDraft] = useState<Settings>(defaultSettings);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [recentOpen, setRecentOpen] = useState(false);
   const [integration, setIntegration] = useState<ShellIntegrationStatus | null>(null);
   const [dragActive, setDragActive] = useState(false);
   const [nativeIcons, setNativeIcons] = useState<Record<string, string>>({});
@@ -127,6 +131,8 @@ function App() {
   const searchRef = useRef<HTMLInputElement>(null);
   const shellBusy = useRef(false);
   const requestedIcons = useRef(new Set<string>());
+  const archivePathRef = useRef<string | null>(null);
+  archivePathRef.current = archive?.path ?? null;
   const busy = operation !== null;
   const selectedEntries = useMemo(
     () => entries?.entries.filter((entry) => selected.has(entry.path)) ?? [],
@@ -153,6 +159,8 @@ function App() {
       if (payload === "about") setAboutOpen(true);
       else if (!busy && payload === "new-archive") openCreateDialog();
       else if (!busy && payload === "open-archive") void chooseArchive();
+      else if (!busy && payload === "open-recent") { void refreshRecents(); setRecentOpen(true); }
+      else if (!busy && payload === "close-archive") closeArchive();
       else if (!busy && payload === "settings") openSettings();
     }).then((remove) => {
       if (disposed) remove(); else unlisten = remove;
@@ -201,19 +209,25 @@ function App() {
 
   useEffect(() => {
     if (!archive) {
-      setFolders([]);
+      setFolderChildren({});
+      setExpandedFolders(new Set());
       return;
     }
     let active = true;
-    void archiveFolders(archive.path)
+    setFolderChildren({});
+    setExpandedFolders(new Set());
+    void archiveFolders(archive.path, "", settings.showHiddenEntries)
       .then((value) => {
         if (!active) return;
-        setFolders(value);
-        setExpandedFolders(new Set(value.filter((path) => !path.includes("/"))));
+        setFolderChildren({ "": value });
       })
       .catch((caught) => active && setError(archiveError(caught)));
     return () => { active = false; };
-  }, [archive]);
+  }, [archive, settings.showHiddenEntries]);
+
+  useEffect(() => {
+    if (!settings.showHiddenEntries && isHiddenArchivePath(folder)) navigateFolder("");
+  }, [folder, settings.showHiddenEntries]);
 
   useEffect(() => {
     if (!entries) return;
@@ -288,12 +302,13 @@ function App() {
         else if (commentOpen) setCommentOpen(false);
         else if (extractDialog) setExtractDialog(null);
         else if (settingsOpen) setSettingsOpen(false);
+        else if (recentOpen) setRecentOpen(false);
         else if (createOpen) setCreateOpen(false);
         else if (passwordAction) clearPasswordPrompt();
         else if (job?.cancellable) void requestCancellation();
         return;
       }
-      const dialogOpen = aboutOpen || propertiesEntry || passwordAction || createOpen || settingsOpen || extractDialog || renameDialog || commentOpen;
+      const dialogOpen = aboutOpen || propertiesEntry || passwordAction || createOpen || settingsOpen || recentOpen || extractDialog || renameDialog || commentOpen;
       if (event.key === " " && !modifier && archive && !busy && !dialogOpen && selectedEntries.length === 1 && !selectedEntries[0].isDirectory && !isTypingTarget(event.target)) {
         event.preventDefault();
         void requestEntryOpen(selectedEntries[0], true);
@@ -316,7 +331,7 @@ function App() {
     };
     window.addEventListener("keydown", shortcut);
     return () => window.removeEventListener("keydown", shortcut);
-  }, [aboutOpen, archive, busy, commentOpen, createOpen, entries, entryMenu, extractDialog, job, passwordAction, propertiesEntry, renameDialog, selected, selectedEntries, settingsOpen]);
+  }, [aboutOpen, archive, busy, commentOpen, createOpen, entries, entryMenu, extractDialog, job, passwordAction, propertiesEntry, recentOpen, renameDialog, selected, selectedEntries, settingsOpen]);
 
   async function chooseArchive() {
     const path = await open({ multiple: false, directory: false, title: "Open Archive", filters: [{ name: "Archives", extensions: archiveFilters }] });
@@ -429,6 +444,13 @@ function App() {
     resetBrowser(); setArchiveOutdated(false); setMonitorChanges(true);
   }
 
+  function closeArchive() {
+    setArchive(null); setEntries(null); setCommentDraft(""); setArchiveNeedsPassword(false);
+    setArchiveOutdated(false); setMonitorChanges(false); setEntryMenu(null); setPropertiesEntry(null);
+    setRenameDialog(null); setCommentOpen(false); setExtractDialog(null); clearPasswordPrompt();
+    resetBrowser(); setStatus("Choose an archive to inspect its contents.");
+  }
+
   function resetBrowser() {
     setFolder(""); setFolderHistory([""]); setFolderHistoryIndex(0); setQuery("");
     setPageNumber(1); setSelected(new Set()); setLastSelected(null);
@@ -441,6 +463,26 @@ function App() {
       setFolderHistoryIndex(history.length - 1);
       return history;
     });
+  }
+
+  async function toggleFolder(node: ArchiveFolder) {
+    if (!node.hasChildren) return;
+    if (expandedFolders.has(node.path)) {
+      setExpandedFolders((current) => { const next = new Set(current); next.delete(node.path); return next; });
+      return;
+    }
+    setExpandedFolders((current) => new Set(current).add(node.path));
+    if (folderChildren[node.path] || !archive) return;
+    const archivePath = archive.path;
+    try {
+      const children = await archiveFolders(archivePath, node.path, settings.showHiddenEntries);
+      if (archivePathRef.current === archivePath) {
+        setFolderChildren((current) => ({ ...current, [node.path]: children }));
+      }
+    } catch (caught) {
+      setExpandedFolders((current) => { const next = new Set(current); next.delete(node.path); return next; });
+      setError(archiveError(caught));
+    }
   }
 
   function moveHistory(nextIndex: number) {
@@ -842,7 +884,6 @@ function App() {
   }
 
   const crumbs = folder ? folder.split("/") : [];
-  const folderTree = useMemo(() => buildFolderTree(folders), [folders]);
   return (
     <main className={`app-shell${dragActive ? " drag-active" : ""}`}>
       {!archive && <header className="welcome-toolbar" data-tauri-drag-region>
@@ -869,19 +910,21 @@ function App() {
               <input ref={searchRef} type="search" value={query} onChange={(event) => { setQuery(event.target.value); setPageNumber(1); setSelected(new Set()); }} placeholder="Search" />
               {query && <button type="button" className="search-clear" aria-label="Clear search" onClick={() => { setQuery(""); setPageNumber(1); setSelected(new Set()); searchRef.current?.focus(); }}><Icon name="close" /></button>}
             </label>
-            {archive.canModify && <button className="toolbar-label-button" onClick={() => void chooseArchiveAdditions(false)} disabled={busy}><Icon name="add" /><span>Add</span></button>}
+            {archive.canModify && <PopupMenu label="Add to archive" open={addMenuOpen} onOpenChange={setAddMenuOpen} disabled={busy} triggerClassName="toolbar-label-button" trigger={<><Icon name="add" /><span>Add</span><Icon name="disclosureDown" /></>}>
+              <button role="menuitem" onClick={() => { setAddMenuOpen(false); void chooseArchiveAdditions(false); }}>Add Files…</button>
+              <button role="menuitem" onClick={() => { setAddMenuOpen(false); void chooseArchiveAdditions(true); }}>Add Folder…</button>
+            </PopupMenu>}
             <button className="toolbar-label-button" onClick={requestTest} disabled={busy}><Icon name="test" /><span>Test</span></button>
-            <button className="primary-button toolbar-label-button" onClick={() => void requestExtraction(selected.size ? [...selected] : [])} disabled={busy}><Icon name="extract" /><span>{selected.size ? `Extract ${selected.size}` : "Extract"}</span></button>
-            <div className="more-menu-wrap">
-              <button className="toolbar-icon-button" aria-label="More actions" title="More actions" onClick={() => setMoreOpen((value) => !value)}><Icon name="more" /></button>
-              {moreOpen && <div className="toolbar-more-menu" role="menu">
-                {archive.canModify && <button role="menuitem" onClick={() => { setMoreOpen(false); void chooseArchiveAdditions(true); }}>Add Folder…</button>}
+            <PopupMenu label="Extract options" open={extractMenuOpen} onOpenChange={setExtractMenuOpen} disabled={busy} triggerClassName="primary-button toolbar-label-button" trigger={<><Icon name="extract" /><span>Extract</span><Icon name="disclosureDown" /></>}>
+              {selected.size > 0 && <button role="menuitem" onClick={() => { setExtractMenuOpen(false); void requestExtraction([...selected]); }}>Extract Selected ({selected.size})…</button>}
+              <button role="menuitem" onClick={() => { setExtractMenuOpen(false); void requestExtraction([]); }}>Extract All…</button>
+            </PopupMenu>
+            <PopupMenu label="More actions" open={moreOpen} onOpenChange={setMoreOpen} trigger={<Icon name="more" />}>
                 {archive.canModify && selectedEntries.length === 1 && <button role="menuitem" onClick={() => { setMoreOpen(false); requestRename(selectedEntries[0]); }}>Rename…</button>}
                 {archive.canModify && selected.size > 0 && <button className="danger-button" role="menuitem" onClick={() => { setMoreOpen(false); void requestDelete([...selected]); }}>Delete</button>}
                 {archive.path.toLowerCase().endsWith(".zip") && <button role="menuitem" onClick={() => { setMoreOpen(false); openCommentEditor(); }}>Comment…</button>}
                 <button role="menuitem" onClick={() => { setMoreOpen(false); openSettings(); }}>Settings…</button>
-              </div>}
-            </div>
+            </PopupMenu>
           </div>
         </div>
         <div className="browser-bar">
@@ -890,7 +933,7 @@ function App() {
         <div className={`browser-content${sidebarVisible ? " with-sidebar" : ""}`}>
           {sidebarVisible && <aside className="folder-sidebar" aria-label="Archive folders">
             <button className={`sidebar-root${folder === "" ? " active" : ""}`} onClick={() => navigateFolder("")}><Icon name="archive" /><span>{archive.name}</span></button>
-            <FolderTree nodes={folderTree} activePath={folder} expanded={expandedFolders} onToggle={(path) => setExpandedFolders((current) => { const next = new Set(current); if (next.has(path)) next.delete(path); else next.add(path); return next; })} onNavigate={navigateFolder} />
+            <FolderTree nodes={folderChildren[""] ?? []} childrenByFolder={folderChildren} activePath={folder} expanded={expandedFolders} onToggle={(node) => void toggleFolder(node)} onNavigate={navigateFolder} />
           </aside>}
           <div className="table-wrap"><table><thead><tr><SortableHeader label="Name" value="name" current={sort} descending={descending} onSort={changeSort} /><th>Type</th><SortableHeader label="Size" value="size" current={sort} descending={descending} onSort={changeSort} /><SortableHeader label="Compressed" value="packedSize" current={sort} descending={descending} onSort={changeSort} /><SortableHeader label="Ratio" value="ratio" current={sort} descending={descending} onSort={changeSort} /><SortableHeader label="Modified" value="modified" current={sort} descending={descending} onSort={changeSort} /><th>Encrypted</th></tr></thead>
           <tbody>{entries?.entries.map((entry, index) => <tr key={entry.path} data-entry={entry.path} tabIndex={index === 0 || selected.has(entry.path) ? 0 : -1} aria-selected={selected.has(entry.path)} aria-label={entryLabel(entry)} className={selected.has(entry.path) ? "selected" : undefined} onClick={(event) => selectEntry(event, entry)} onKeyDown={(event) => handleRowKey(event, index, entry)} onDoubleClick={() => entry.isDirectory ? navigateFolder(entry.path) : void requestEntryOpen(entry, false)} onContextMenu={(event) => { event.preventDefault(); setSelected(new Set([entry.path])); setEntryMenu(contextMenuPosition(event, entry)); }} title={entry.isDirectory ? "Double-click to open; right-click for actions" : "Double-click to open; press Spacebar for Quick Look"}>
@@ -909,15 +952,12 @@ function App() {
           </div>
           <p className="drop-hint">Drop an archive anywhere</p>
         </div>
-        {settings.historyEnabled && recents.length > 0 && <section className="recent-section" aria-label="Recent archives">
-          <div className="recent-heading">Recent</div>
-          <div className="recent-list">{recents.map((path) => <button key={path} onClick={() => void loadArchive(path)} title={path}><Icon name="archive" /><span className="recent-copy"><strong>{leafName(path)}</strong><small>{parentPath(path)}</small></span></button>)}</div>
-        </section>}
         <span className="empty-status" role="status">{status}</span>
       </section>}
 
       {entryMenu && <div className="context-menu" role="menu" style={{ left: entryMenu.x, top: entryMenu.y }} onClick={(event) => event.stopPropagation()}>{entryMenu.entry.isDirectory ? <button role="menuitem" onClick={() => { const path = entryMenu.entry.path; setEntryMenu(null); navigateFolder(path); }}>Open Folder</button> : <><button role="menuitem" onClick={() => { const entry = entryMenu.entry; setEntryMenu(null); void requestEntryOpen(entry, false); }}>Open</button><button role="menuitem" onClick={() => { const entry = entryMenu.entry; setEntryMenu(null); void requestEntryOpen(entry, true); }}><Icon name="quickLook" />Quick Look</button></>}<button role="menuitem" onClick={() => { const path = entryMenu.entry.path; setEntryMenu(null); void requestExtraction([path]); }}><Icon name="extract" />Extract {entryMenu.entry.isDirectory ? "Folder" : "File"}…</button>{archive?.canModify && <><button role="menuitem" onClick={() => { const entry = entryMenu.entry; setEntryMenu(null); requestRename(entry); }}>Rename…</button><button className="danger-button" role="menuitem" onClick={() => { const path = entryMenu.entry.path; setEntryMenu(null); void requestDelete([path]); }}>Delete</button></>}<button role="menuitem" onClick={() => { const path = entryMenu.entry.path; setEntryMenu(null); void copyPaths([path]); }}>Copy Path</button><button role="menuitem" onClick={() => { setPropertiesEntry(entryMenu.entry); setEntryMenu(null); }}>Properties</button></div>}
-      {aboutOpen && <Modal className="about-dialog" labelledBy="about-title" onClose={() => setAboutOpen(false)}><div className="about-heading"><img src={appIcon} alt="" /><div><h2 id="about-title">Archi</h2><p>Version {appVersion ?? "0.3.1"}</p></div></div><p>Fast, private archive management for macOS.</p><dl><dt>Archive engine</dt><dd>7-Zip 26.02</dd></dl><p className="about-legal">7-Zip is licensed separately under the GNU LGPL with the unRAR restriction. Full notices and corresponding source are included with Archi.</p><p>© 2026 Nitivar</p><div className="modal-actions"><button autoFocus onClick={() => setAboutOpen(false)}>Close</button></div></Modal>}
+      {aboutOpen && <Modal className="about-dialog" labelledBy="about-title" onClose={() => setAboutOpen(false)}><div className="about-heading"><img src={appIcon} alt="" /><div><h2 id="about-title">Archi</h2><p>Version {appVersion ?? "0.4.0"}</p></div></div><p>Fast, private archive management for macOS.</p><dl><dt>Archive engine</dt><dd>7-Zip 26.02</dd></dl><p className="about-legal">7-Zip is licensed separately under the GNU LGPL with the unRAR restriction. Full notices and corresponding source are included with Archi.</p><p>© 2026 Nitivar</p><div className="modal-actions"><button autoFocus onClick={() => setAboutOpen(false)}>Close</button></div></Modal>}
+      {recentOpen && <Modal className="recent-dialog" labelledBy="recent-title" onClose={() => setRecentOpen(false)}><h2 id="recent-title">Open Recent</h2>{settings.historyEnabled && recents.length ? <div className="recent-list">{recents.map((path) => <button key={path} onClick={() => { setRecentOpen(false); void loadArchive(path); }} title={path}><Icon name="archive" /><span className="recent-copy"><strong>{leafName(path)}</strong><small>{parentPath(path)}</small></span></button>)}</div> : <p>{settings.historyEnabled ? "No recent archives." : "Recent archive history is disabled in Settings."}</p>}<div className="modal-actions"><button autoFocus onClick={() => setRecentOpen(false)}>Close</button></div></Modal>}
       {propertiesEntry && <PropertiesDialog entry={propertiesEntry} onClose={() => setPropertiesEntry(null)} />}
       {renameDialog && <Modal className="password-dialog" labelledBy="rename-title" onClose={() => setRenameDialog(null)}><form className="modal-form" onSubmit={submitRename}><h2 id="rename-title">Rename archive entry</h2><p>{renameDialog.entry.path}</p><label>New name<input autoFocus value={renameDialog.name} onChange={(event) => setRenameDialog({ ...renameDialog, name: event.target.value })} /></label><div className="modal-actions"><button type="button" onClick={() => setRenameDialog(null)}>Cancel</button><button className="primary-button" type="submit">Rename</button></div></form></Modal>}
       {commentOpen && <Modal className="comment-dialog" labelledBy="comment-title" onClose={() => setCommentOpen(false)}><form className="modal-form" onSubmit={submitComment}><h2 id="comment-title">ZIP archive comment</h2><label>Comment<textarea autoFocus rows={6} maxLength={65535} value={commentDraft} onChange={(event) => setCommentDraft(event.target.value)} /></label><p>{new TextEncoder().encode(commentDraft).length.toLocaleString()} of 65,535 UTF-8 bytes</p><div className="modal-actions"><button type="button" onClick={() => setCommentOpen(false)}>Cancel</button><button className="primary-button" type="submit">Save Comment</button></div></form></Modal>}
@@ -961,35 +1001,15 @@ function Icon({ name, className = "" }: { name: IconName; className?: string }) 
   return <svg className={`ui-icon ${className}`.trim()} viewBox="0 0 20 20" aria-hidden="true" focusable="false">{body}</svg>;
 }
 
-interface FolderTreeNode { name: string; path: string; children: FolderTreeNode[] }
-function buildFolderTree(paths: string[]): FolderTreeNode[] {
-  const roots: FolderTreeNode[] = [];
-  const nodes = new Map<string, FolderTreeNode>();
-  for (const path of paths) {
-    const parts = path.split("/").filter(Boolean);
-    let parent: FolderTreeNode | null = null;
-    for (let index = 0; index < parts.length; index += 1) {
-      const currentPath = parts.slice(0, index + 1).join("/");
-      let node = nodes.get(currentPath);
-      if (!node) {
-        node = { name: parts[index], path: currentPath, children: [] };
-        nodes.set(currentPath, node);
-        if (parent) parent.children.push(node); else roots.push(node);
-      }
-      parent = node;
-    }
-  }
-  return roots;
-}
-function FolderTree({ nodes, activePath, expanded, onToggle, onNavigate, depth = 0 }: { nodes: FolderTreeNode[]; activePath: string; expanded: Set<string>; onToggle: (path: string) => void; onNavigate: (path: string) => void; depth?: number }) {
+function FolderTree({ nodes, childrenByFolder, activePath, expanded, onToggle, onNavigate, depth = 0 }: { nodes: ArchiveFolder[]; childrenByFolder: Record<string, ArchiveFolder[]>; activePath: string; expanded: Set<string>; onToggle: (node: ArchiveFolder) => void; onNavigate: (path: string) => void; depth?: number }) {
   return <>{nodes.map((node) => {
     const isExpanded = expanded.has(node.path);
     return <div key={node.path}>
       <div className={`sidebar-row${activePath === node.path ? " active" : ""}`} style={{ paddingLeft: `${10 + depth * 14}px` }}>
-        <button className="disclosure" aria-label={`${isExpanded ? "Collapse" : "Expand"} ${node.name}`} onClick={() => node.children.length && onToggle(node.path)} disabled={!node.children.length}>{node.children.length ? <Icon name={isExpanded ? "disclosureDown" : "disclosureRight"} /> : null}</button>
+        <button className="disclosure" aria-label={`${isExpanded ? "Collapse" : "Expand"} ${node.name}`} aria-expanded={node.hasChildren ? isExpanded : undefined} onClick={() => onToggle(node)} disabled={!node.hasChildren}>{node.hasChildren ? <Icon name={isExpanded ? "disclosureDown" : "disclosureRight"} /> : null}</button>
         <button className="sidebar-folder" onClick={() => onNavigate(node.path)}><Icon name="folder" /><span>{node.name}</span></button>
       </div>
-      {node.children.length > 0 && isExpanded && <FolderTree nodes={node.children} activePath={activePath} expanded={expanded} onToggle={onToggle} onNavigate={onNavigate} depth={depth + 1} />}
+      {isExpanded && <FolderTree nodes={childrenByFolder[node.path] ?? []} childrenByFolder={childrenByFolder} activePath={activePath} expanded={expanded} onToggle={onToggle} onNavigate={onNavigate} depth={depth + 1} />}
     </div>;
   })}</>;
 }
@@ -1037,6 +1057,7 @@ function leafName(path: string) { const parts = path.split(/[\\/]/).filter(Boole
 function isTypingTarget(target: EventTarget | null) { return target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement || (target instanceof HTMLElement && target.isContentEditable); }
 function parentPath(path: string) { const index = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\")); return index > 0 ? path.slice(0, index) : path; }
 function parentEntryPath(path: string) { const index = path.lastIndexOf("/"); return index < 0 ? "" : path.slice(0, index); }
+function isHiddenArchivePath(path: string) { return path.split("/").some((part) => part.startsWith(".") && part !== "."); }
 function contextMenuPosition(event: React.MouseEvent, entry: ArchiveEntry): EntryMenu {
   const margin = 8;
   const width = 190;

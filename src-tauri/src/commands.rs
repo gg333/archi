@@ -1,6 +1,6 @@
 use crate::{
     archive::{self, ArchiveEntry, ArchiveError, ArchiveFormat, CompressionLevel},
-    browser::{ArchiveDocument, ArchiveStore, EntryPage, SortKey},
+    browser::{ArchiveDocument, ArchiveFolder, ArchiveStore, EntryPage, SortKey},
     jobs::{self, JobManager, JobSnapshot},
     safe_paths::{self, CommitSummary, ConflictPolicy, StagingDirectory},
     settings::{LocalData, Settings, MAX_EXPANDED_BYTES, MIN_EXPANDED_BYTES},
@@ -593,11 +593,16 @@ pub(crate) async fn entry_page(
 }
 
 #[tauri::command]
-pub(crate) fn archive_folders(
+pub(crate) async fn archive_folders(
     archives: tauri::State<'_, ArchiveStore>,
     path: String,
-) -> Result<Vec<String>, ArchiveError> {
-    archives.folders(&path)
+    folder: String,
+    show_hidden: bool,
+) -> Result<Vec<ArchiveFolder>, ArchiveError> {
+    let archives = archives.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || archives.folders(&path, &folder, show_hidden))
+        .await
+        .map_err(task_error)?
 }
 
 #[tauri::command]

@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type {
   ArchiveDocument,
   ArchiveError,
+  ArchiveFolder,
   ArchiveFormat,
   CompressionLevel,
   ConflictPolicy,
@@ -132,8 +133,8 @@ export function entryPage(
   });
 }
 
-export function archiveFolders(path: string): Promise<string[]> {
-  return invoke("archive_folders", { path });
+export function archiveFolders(path: string, folder: string, showHidden: boolean): Promise<ArchiveFolder[]> {
+  return invoke("archive_folders", { path, folder, showHidden });
 }
 
 export function archiveChanged(path: string): Promise<boolean> {

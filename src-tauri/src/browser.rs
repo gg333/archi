@@ -2,7 +2,7 @@ use crate::archive::{ArchiveEntry, ArchiveError};
 use serde::{Deserialize, Serialize};
 use std::{
     cmp::Ordering,
-    collections::{BTreeMap, BTreeSet, HashSet},
+    collections::{BTreeMap, HashSet},
     fs,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
@@ -16,7 +16,7 @@ pub(crate) struct ArchiveStore(Arc<Mutex<Option<OpenArchive>>>);
 
 struct OpenArchive {
     path: PathBuf,
-    entries: Vec<ArchiveEntry>,
+    entries: Arc<[ArchiveEntry]>,
     fingerprint: Fingerprint,
 }
 
@@ -62,6 +62,14 @@ pub(crate) struct EntryPage {
     pub total_pages: usize,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ArchiveFolder {
+    pub path: String,
+    pub name: String,
+    pub has_children: bool,
+}
+
 impl ArchiveStore {
     pub(crate) fn install(
         &self,
@@ -79,7 +87,7 @@ impl ArchiveStore {
         let document = summary(&path, &name, &engine_version, &entries);
         *self.0.lock().map_err(lock_error)? = Some(OpenArchive {
             path: path_buf,
-            entries,
+            entries: entries.into(),
             fingerprint,
         });
         Ok(document)
@@ -98,10 +106,12 @@ impl ArchiveStore {
         show_hidden: bool,
     ) -> Result<EntryPage, ArchiveError> {
         validate_folder(folder)?;
-        let guard = self.0.lock().map_err(lock_error)?;
-        let archive = current(&guard, path)?;
+        let entries = {
+            let guard = self.0.lock().map_err(lock_error)?;
+            Arc::clone(&current(&guard, path)?.entries)
+        };
         Ok(build_page(
-            &archive.entries,
+            &entries,
             folder,
             query,
             sort,
@@ -112,20 +122,18 @@ impl ArchiveStore {
         ))
     }
 
-    pub(crate) fn folders(&self, path: &str) -> Result<Vec<String>, ArchiveError> {
-        let guard = self.0.lock().map_err(lock_error)?;
-        let archive = current(&guard, path)?;
-        let mut folders = BTreeSet::new();
-        for entry in &archive.entries {
-            let parts = entry.path.split('/').collect::<Vec<_>>();
-            let parent_count = parts
-                .len()
-                .saturating_sub(if entry.is_directory { 0 } else { 1 });
-            for length in 1..=parent_count {
-                folders.insert(parts[..length].join("/"));
-            }
-        }
-        Ok(folders.into_iter().collect())
+    pub(crate) fn folders(
+        &self,
+        path: &str,
+        folder: &str,
+        show_hidden: bool,
+    ) -> Result<Vec<ArchiveFolder>, ArchiveError> {
+        validate_folder(folder)?;
+        let entries = {
+            let guard = self.0.lock().map_err(lock_error)?;
+            Arc::clone(&current(&guard, path)?.entries)
+        };
+        Ok(child_folders(&entries, folder, show_hidden))
     }
 
     pub(crate) fn changed(&self, path: &str) -> Result<bool, ArchiveError> {
@@ -139,7 +147,7 @@ impl ArchiveStore {
         *self.0.lock().unwrap() = Some(OpenArchive {
             fingerprint: fingerprint(&path).unwrap(),
             path,
-            entries,
+            entries: entries.into(),
         });
     }
 }
@@ -303,6 +311,44 @@ fn folder_entries(entries: &[ArchiveEntry], folder: &str, show_hidden: bool) -> 
     children.into_values().collect()
 }
 
+fn child_folders(entries: &[ArchiveEntry], folder: &str, show_hidden: bool) -> Vec<ArchiveFolder> {
+    let prefix = if folder.is_empty() {
+        String::new()
+    } else {
+        format!("{folder}/")
+    };
+    let mut children = BTreeMap::<&str, bool>::new();
+    for entry in entries {
+        if !show_hidden && is_hidden(&entry.path) {
+            continue;
+        }
+        let Some(rest) = entry.path.strip_prefix(&prefix) else {
+            continue;
+        };
+        let (name, has_children) = match rest.split_once('/') {
+            Some((name, remainder)) if !name.is_empty() => (name, !remainder.is_empty()),
+            None if entry.is_directory && !rest.is_empty() => (rest, false),
+            _ => continue,
+        };
+        children
+            .entry(name)
+            .and_modify(|current| *current |= has_children)
+            .or_insert(has_children);
+    }
+    children
+        .into_iter()
+        .map(|(name, has_children)| ArchiveFolder {
+            path: if prefix.is_empty() {
+                name.to_string()
+            } else {
+                format!("{prefix}{name}")
+            },
+            name: name.to_string(),
+            has_children,
+        })
+        .collect()
+}
+
 fn compare_entries(
     left: &ArchiveEntry,
     right: &ArchiveEntry,
@@ -427,6 +473,11 @@ mod tests {
             total: 1,
             total_pages: 1,
         };
+        let folder = ArchiveFolder {
+            path: "folder".to_string(),
+            name: "folder".to_string(),
+            has_children: true,
+        };
 
         assert_eq!(
             serde_json::to_value(document).unwrap(),
@@ -464,6 +515,51 @@ mod tests {
                 "totalPages": 1
             })
         );
+        assert_eq!(
+            serde_json::to_value(folder).unwrap(),
+            serde_json::json!({
+                "path": "folder",
+                "name": "folder",
+                "hasChildren": true
+            })
+        );
+    }
+
+    #[test]
+    fn lists_only_immediate_visible_folder_children() {
+        let entries = vec![
+            entry("docs/readme.txt".to_string(), false, 1),
+            entry("docs/guides/start.txt".to_string(), false, 1),
+            entry("docs/empty".to_string(), true, 0),
+            entry(".private/secret.txt".to_string(), false, 1),
+            entry("docs/.drafts/note.txt".to_string(), false, 1),
+        ];
+
+        assert_eq!(
+            child_folders(&entries, "", false),
+            vec![ArchiveFolder {
+                path: "docs".to_string(),
+                name: "docs".to_string(),
+                has_children: true,
+            }]
+        );
+        assert_eq!(
+            child_folders(&entries, "docs", false),
+            vec![
+                ArchiveFolder {
+                    path: "docs/empty".to_string(),
+                    name: "empty".to_string(),
+                    has_children: false,
+                },
+                ArchiveFolder {
+                    path: "docs/guides".to_string(),
+                    name: "guides".to_string(),
+                    has_children: true,
+                },
+            ]
+        );
+        assert_eq!(child_folders(&entries, "", true).len(), 2);
+        assert_eq!(child_folders(&entries, "docs", true).len(), 3);
     }
 
     #[test]
@@ -500,6 +596,9 @@ mod tests {
         assert_eq!(bulk.entries.len(), 200);
         let search = build_page(&entries, "", "second", SortKey::Name, false, 1, 200, false);
         assert_eq!(search.entries[0].path, "folder/nested/second.txt");
+        let root_folders = child_folders(&entries, "", false);
+        assert_eq!(root_folders.len(), 2);
+        assert_eq!(child_folders(&entries, "bulk", false), []);
         let estimated_bytes = entries.len() * mem::size_of::<ArchiveEntry>()
             + entries
                 .iter()
