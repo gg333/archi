@@ -14,10 +14,11 @@ import { basename, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 
 const root = resolve(import.meta.dirname, "..");
-const dmg = resolve(process.argv[2] ?? "");
+const input = process.argv[2] === "--" ? process.argv[3] : process.argv[2];
+const dmg = resolve(input ?? "");
 const expectedTeam = process.env.APPLE_TEAM_ID ?? "37XUNJ3WYK";
 
-if (!process.argv[2] || !existsSync(dmg) || !dmg.endsWith(".dmg")) {
+if (!input || !existsSync(dmg) || !dmg.endsWith(".dmg")) {
   throw new Error("Usage: pnpm verify:macos -- /absolute/path/to/Archi_<version>_universal.dmg");
 }
 
