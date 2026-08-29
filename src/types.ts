@@ -23,11 +23,12 @@ export interface ArchiveDocument {
   volumeCount: number;
 }
 
-export type SortKey = "name" | "size" | "packedSize" | "ratio" | "modified";
+export type SortKey = "name" | "type" | "size" | "packedSize" | "ratio" | "modified";
 
 export interface EntryPage {
   folder: string;
   entries: ArchiveEntry[];
+  fileTypes: string[];
   page: number;
   pageSize: number;
   total: number;

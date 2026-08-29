@@ -132,8 +132,41 @@ pub(crate) fn write(_path: &Path, _value: &[u8]) -> io::Result<()> {
 }
 
 pub(crate) fn copy(source: &Path, destination: &Path) -> io::Result<()> {
-    if let Some(value) = read(source)? {
-        write(destination, &value)?;
+    let value = match read(source) {
+        Ok(value) => value,
+        Err(error) if xattrs_unsupported(&error) => None,
+        Err(error) => return Err(error),
+    };
+    if let Some(value) = value {
+        if let Err(error) = write(destination, &value) {
+            if !xattrs_unsupported(&error) {
+                return Err(error);
+            }
+        }
     }
     Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn xattrs_unsupported(error: &io::Error) -> bool {
+    const ENOTSUP: i32 = 45;
+    const EOPNOTSUPP: i32 = 102;
+    matches!(error.raw_os_error(), Some(ENOTSUP | EOPNOTSUPP))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn xattrs_unsupported(_error: &io::Error) -> bool {
+    false
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_unsupported_xattr_errors_are_best_effort() {
+        assert!(xattrs_unsupported(&io::Error::from_raw_os_error(45)));
+        assert!(xattrs_unsupported(&io::Error::from_raw_os_error(102)));
+        assert!(!xattrs_unsupported(&io::Error::from_raw_os_error(13)));
+    }
 }

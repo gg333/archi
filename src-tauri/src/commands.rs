@@ -144,38 +144,7 @@ pub(crate) async fn open_archive_entry(
     let data = data.inner().clone();
     let preview_root = preview_root(&app)?;
     tauri::async_runtime::spawn_blocking(move || {
-        let control = jobs.start("extract", 0)?;
-        let password = password.map(Zeroizing::new);
-        let password = password.as_ref().map(|value| value.as_str());
-        let archive_path = PathBuf::from(path);
-        let archive_entries = archive::list_archive(data.engine_path(), &archive_path, password)?;
-        safe_paths::validate_archive_entries(&archive_entries)?;
-        let selected_entry = archive_entries
-            .iter()
-            .find(|candidate| candidate.path == entry)
-            .ok_or_else(|| {
-                ArchiveError::new(
-                    "entry_not_found",
-                    "The archive entry is no longer available",
-                )
-            })?;
-        let preview_limit = data.load()?.preview_limit();
-        safe_paths::validate_preview_entry(selected_entry, preview_limit)?;
-        let selected = validate_selection(vec![entry.clone()], &archive_entries)?;
-        let total = validate_expansion(&selected, &archive_entries, preview_limit, false)?;
-        control.set_total_bytes(total);
-        let staging = StagingDirectory::create()?;
-        jobs::run_extract(
-            &control,
-            data.engine_path(),
-            &archive_path,
-            staging.path(),
-            &selected,
-            password,
-            Some(preview_limit),
-        )?;
-        let preview =
-            safe_paths::persist_preview_file(staging.path(), &entry, &preview_root, preview_limit)?;
+        let preview = prepare_preview_entry(jobs, data, path, entry, password, preview_root)?;
         let launched = if quick_look {
             #[cfg(target_os = "macos")]
             {
@@ -198,6 +167,26 @@ pub(crate) async fn open_archive_entry(
             return Err(error);
         }
         Ok(())
+    })
+    .await
+    .map_err(task_error)?
+}
+
+#[tauri::command]
+pub(crate) async fn prepare_archive_entry(
+    app: tauri::AppHandle,
+    jobs: tauri::State<'_, JobManager>,
+    data: tauri::State<'_, LocalData>,
+    path: String,
+    entry: String,
+    password: Option<String>,
+) -> Result<String, ArchiveError> {
+    let jobs = jobs.inner().clone();
+    let data = data.inner().clone();
+    let preview_root = preview_root(&app)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        prepare_preview_entry(jobs, data, path, entry, password, preview_root)
+            .map(|preview| preview.to_string_lossy().into_owned())
     })
     .await
     .map_err(task_error)?
@@ -569,6 +558,7 @@ pub(crate) async fn entry_page(
     path: String,
     folder: String,
     query: String,
+    file_type: String,
     sort: SortKey,
     descending: bool,
     page: usize,
@@ -581,6 +571,7 @@ pub(crate) async fn entry_page(
             &path,
             &folder,
             &query,
+            &file_type,
             sort,
             descending,
             page,
@@ -1032,6 +1023,47 @@ fn preview_root(app: &tauri::AppHandle) -> Result<PathBuf, ArchiveError> {
             )
         })?
         .join("Previews"))
+}
+
+fn prepare_preview_entry(
+    jobs: JobManager,
+    data: LocalData,
+    path: String,
+    entry: String,
+    password: Option<String>,
+    preview_root: PathBuf,
+) -> Result<PathBuf, ArchiveError> {
+    let control = jobs.start("extract", 0)?;
+    let password = password.map(Zeroizing::new);
+    let password = password.as_ref().map(|value| value.as_str());
+    let archive_path = PathBuf::from(path);
+    let archive_entries = archive::list_archive(data.engine_path(), &archive_path, password)?;
+    safe_paths::validate_archive_entries(&archive_entries)?;
+    let selected_entry = archive_entries
+        .iter()
+        .find(|candidate| candidate.path == entry)
+        .ok_or_else(|| {
+            ArchiveError::new(
+                "entry_not_found",
+                "The archive entry is no longer available",
+            )
+        })?;
+    let preview_limit = data.load()?.preview_limit();
+    safe_paths::validate_preview_entry(selected_entry, preview_limit)?;
+    let selected = validate_selection(vec![entry.clone()], &archive_entries)?;
+    let total = validate_expansion(&selected, &archive_entries, preview_limit, false)?;
+    control.set_total_bytes(total);
+    let staging = StagingDirectory::create()?;
+    jobs::run_extract(
+        &control,
+        data.engine_path(),
+        &archive_path,
+        staging.path(),
+        &selected,
+        password,
+        Some(preview_limit),
+    )?;
+    safe_paths::persist_preview_file(staging.path(), &entry, &preview_root, preview_limit)
 }
 
 fn platform_open(path: &Path) -> Result<(), ArchiveError> {

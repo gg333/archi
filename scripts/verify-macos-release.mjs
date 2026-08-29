@@ -105,14 +105,28 @@ try {
 
   const app = findNamed(mountPoint, (name) => name.endsWith(".app"));
   if (!app) throw new Error("The DMG does not contain an application bundle.");
+  const infoPlist = join(app, "Contents/Info.plist");
   const executableName = output("plutil", [
     "-extract",
     "CFBundleExecutable",
     "raw",
     "-o",
     "-",
-    join(app, "Contents/Info.plist"),
+    infoPlist,
   ]);
+  const services = JSON.parse(
+    output("plutil", ["-extract", "NSServices", "json", "-o", "-", infoPlist]),
+  );
+  if (!Array.isArray(services) || services.length !== 5) {
+    throw new Error(
+      `The app bundle must advertise exactly five Finder Services; found ${services.length ?? 0}.`,
+    );
+  }
+  if (services.some((service) => service.NSPortName !== executableName)) {
+    throw new Error(
+      `Every Finder Service NSPortName must match CFBundleExecutable (${executableName}).`,
+    );
+  }
   const executable = join(app, "Contents/MacOS", executableName);
   const sevenZip = findNamed(join(app, "Contents"), (name, _path, entry) =>
     name === "7zz" && entry.isFile(),

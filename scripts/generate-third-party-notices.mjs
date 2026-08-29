@@ -23,13 +23,15 @@ function copyLicenses(kind, name, version, packageDir, license, source, extraFil
   const target = join(outputDir, kind, `${name.replaceAll("/", "__")}-${version}`);
   mkdirSync(target, { recursive: true });
   if (!files.size) {
-    writeFileSync(join(target, "LICENSE-DECLARATION.txt"), `${name} ${version}\nLicense declared by package manifest: ${license}\nSource: ${source}\n`);
-    return;
+    const sourceLine = source ? `\nSource: ${source}` : "";
+    writeFileSync(join(target, "LICENSE-DECLARATION.txt"), `${name} ${version}\nLicense declared by package manifest: ${license}${sourceLine}\n`);
+    return target;
   }
   for (const file of [...files].sort()) {
     const source = resolve(packageDir, file);
     copyFileSync(source, join(target, file.split("/").at(-1)));
   }
+  return target;
 }
 
 const metadata = JSON.parse(execFileSync("cargo", [
@@ -72,6 +74,7 @@ const jsPackageJsons = [
   "node_modules/@tauri-apps/api/package.json",
   "node_modules/@tauri-apps/plugin-dialog/package.json",
   "node_modules/@tauri-apps/plugin-notification/package.json",
+  "node_modules/@crabnebula/tauri-plugin-drag/package.json",
   "node_modules/react/package.json",
   "node_modules/react-dom/package.json",
   "node_modules/.pnpm/scheduler@0.27.0/node_modules/scheduler/package.json",
@@ -80,13 +83,24 @@ for (const relativePath of jsPackageJsons) {
   const manifestPath = realpathSync(join(root, relativePath));
   const pkg = JSON.parse(readFileSync(manifestPath, "utf8"));
   const packageDir = dirname(manifestPath);
-  copyLicenses("javascript", pkg.name, pkg.version, packageDir, pkg.license, typeof pkg.repository === "string" ? pkg.repository : pkg.repository?.url ?? "");
+  const isDragPlugin = pkg.name === "@crabnebula/tauri-plugin-drag";
+  const license = pkg.license ?? (isDragPlugin ? "MIT OR Apache-2.0" : "See source");
+  const source = typeof pkg.repository === "string"
+    ? pkg.repository
+    : pkg.repository?.url ?? (isDragPlugin ? "https://github.com/crabnebula-dev/drag-rs" : "");
+  const target = copyLicenses("javascript", pkg.name, pkg.version, packageDir, license, source);
+  if (isDragPlugin) {
+    const rustPackage = rustPackages.find(({ name }) => name === "tauri-plugin-drag");
+    for (const file of licenseFiles(dirname(rustPackage.manifest_path))) {
+      copyFileSync(join(dirname(rustPackage.manifest_path), file), join(target, file));
+    }
+  }
   notices.push({
     ecosystem: "JavaScript",
     name: pkg.name,
     version: pkg.version,
-    license: pkg.license,
-    source: typeof pkg.repository === "string" ? pkg.repository : pkg.repository?.url ?? "",
+    license,
+    source,
   });
 }
 

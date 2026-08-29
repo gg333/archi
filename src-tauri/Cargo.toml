@@ -1,6 +1,6 @@
 [package]
 name = "archive-app"
-version = "0.4.0"
+version = "0.5.0"
 description = "A local-first cross-platform archive manager"
 authors = ["Nitivar"]
 license = "MIT"
@@ -24,6 +24,7 @@ sha2 = "=0.10.9"
 tauri = { version = "=2.11.5", features = [] }
 tauri-plugin-dialog = "=2.7.2"
 tauri-plugin-notification = "=2.3.3"
+tauri-plugin-drag = "=2.1.1"
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = "=1.0.151"
 tempfile = "=3.27.0"

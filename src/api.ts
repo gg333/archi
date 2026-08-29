@@ -49,6 +49,10 @@ export function openArchiveEntry(
   return invoke("open_archive_entry", { path, entry, quickLook, password });
 }
 
+export function prepareArchiveEntry(path: string, entry: string, password?: string): Promise<string> {
+  return invoke("prepare_archive_entry", { path, entry, password });
+}
+
 export function createArchive(
   inputs: string[],
   output: string,
@@ -115,6 +119,7 @@ export function entryPage(
   path: string,
   folder: string,
   query: string,
+  fileType: string,
   sort: SortKey,
   descending: boolean,
   page: number,
@@ -125,6 +130,7 @@ export function entryPage(
     path,
     folder,
     query,
+    fileType,
     sort,
     descending,
     page,

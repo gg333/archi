@@ -105,6 +105,7 @@ button {
 button:hover:not(:disabled) { border-color: var(--control-border-hover); background: var(--surface-subtle); }
 button:focus-visible { outline: 3px solid var(--focus-ring); outline-offset: 2px; }
 button:disabled { opacity: 0.55; cursor: not-allowed; }
+tr[draggable="true"] .entry-name { cursor: grab; }
 .primary-button { border-color: var(--accent-border); color: var(--text-on-accent); background: var(--accent); }
 .primary-button:hover:not(:disabled) { border-color: var(--accent-hover-border); background: var(--accent-hover); }
 .header-actions { gap: 8px; }
@@ -138,6 +139,8 @@ select {
   border-bottom: 1px solid var(--separator);
   background: var(--surface-subtle);
 }
+.type-filter { display: flex; align-items: center; gap: 6px; color: var(--text-secondary); font-size: 12px; }
+.type-filter select { width: 150px; min-width: 0; height: 26px; padding: 3px 24px 3px 8px; font-size: 12px; }
 .page-controls button {
   min-width: 30px;
   padding: 5px 8px;

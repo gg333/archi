@@ -2,7 +2,7 @@ use crate::archive::{ArchiveEntry, ArchiveError};
 use serde::{Deserialize, Serialize};
 use std::{
     cmp::Ordering,
-    collections::{BTreeMap, HashSet},
+    collections::{BTreeMap, BTreeSet, HashSet},
     fs,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
@@ -45,6 +45,7 @@ pub(crate) struct ArchiveDocument {
 #[serde(rename_all = "camelCase")]
 pub(crate) enum SortKey {
     Name,
+    Type,
     Size,
     PackedSize,
     Ratio,
@@ -56,6 +57,7 @@ pub(crate) enum SortKey {
 pub(crate) struct EntryPage {
     pub folder: String,
     pub entries: Vec<ArchiveEntry>,
+    pub file_types: Vec<String>,
     pub page: usize,
     pub page_size: usize,
     pub total: usize,
@@ -99,6 +101,7 @@ impl ArchiveStore {
         path: &str,
         folder: &str,
         query: &str,
+        file_type: &str,
         sort: SortKey,
         descending: bool,
         page: usize,
@@ -114,6 +117,7 @@ impl ArchiveStore {
             &entries,
             folder,
             query,
+            file_type,
             sort,
             descending,
             page,
@@ -228,6 +232,7 @@ fn build_page(
     entries: &[ArchiveEntry],
     folder: &str,
     query: &str,
+    file_type: &str,
     sort: SortKey,
     descending: bool,
     requested_page: usize,
@@ -245,6 +250,16 @@ fn build_page(
             .cloned()
             .collect()
     };
+    let file_types = visible
+        .iter()
+        .map(file_type_key)
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    let file_type = file_type.trim().to_lowercase();
+    if !file_type.is_empty() {
+        visible.retain(|entry| file_type_key(entry) == file_type);
+    }
     visible.sort_by(|left, right| compare_entries(left, right, sort, descending));
 
     let page_size = requested_page_size.clamp(25, MAX_PAGE_SIZE);
@@ -256,6 +271,7 @@ fn build_page(
     EntryPage {
         folder: folder.to_string(),
         entries,
+        file_types,
         page,
         page_size,
         total,
@@ -363,6 +379,7 @@ fn compare_entries(
         SortKey::Name => leaf_name(&left.path)
             .to_lowercase()
             .cmp(&leaf_name(&right.path).to_lowercase()),
+        SortKey::Type => file_type_key(left).cmp(&file_type_key(right)),
         SortKey::Size => left.size.cmp(&right.size),
         SortKey::PackedSize => left.packed_size.cmp(&right.packed_size),
         SortKey::Ratio => ratio(left).total_cmp(&ratio(right)),
@@ -370,6 +387,22 @@ fn compare_entries(
     };
     let order = if descending { order.reverse() } else { order };
     order.then_with(|| left.path.cmp(&right.path))
+}
+
+fn file_type_key(entry: &ArchiveEntry) -> String {
+    if entry.is_link {
+        return "__link__".to_string();
+    }
+    if entry.is_directory {
+        return "__folder__".to_string();
+    }
+    let name = leaf_name(&entry.path);
+    match name.rsplit_once('.') {
+        Some((stem, extension)) if !stem.is_empty() && !extension.is_empty() => {
+            extension.to_lowercase()
+        }
+        _ => "__file__".to_string(),
+    }
 }
 
 fn ratio(entry: &ArchiveEntry) -> f64 {
@@ -468,6 +501,7 @@ mod tests {
         let page = EntryPage {
             folder: String::new(),
             entries: vec![item],
+            file_types: vec!["txt".to_string()],
             page: 1,
             page_size: 200,
             total: 1,
@@ -509,6 +543,7 @@ mod tests {
                     "isLink": false,
                     "linkTarget": null
                 }],
+                "fileTypes": ["txt"],
                 "page": 1,
                 "pageSize": 200,
                 "total": 1,
@@ -583,7 +618,7 @@ mod tests {
         entries.extend(
             (0..100_000).map(|index| entry(format!("bulk/file-{index:06}.txt"), false, index)),
         );
-        let root = build_page(&entries, "", "", SortKey::Name, false, 1, 200, false);
+        let root = build_page(&entries, "", "", "", SortKey::Name, false, 1, 200, false);
         assert_eq!(
             root.entries
                 .iter()
@@ -591,10 +626,30 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["bulk", "folder"]
         );
-        let bulk = build_page(&entries, "bulk", "", SortKey::Name, false, 500, 200, false);
+        let bulk = build_page(
+            &entries,
+            "bulk",
+            "",
+            "",
+            SortKey::Name,
+            false,
+            500,
+            200,
+            false,
+        );
         assert_eq!(bulk.total, 100_000);
         assert_eq!(bulk.entries.len(), 200);
-        let search = build_page(&entries, "", "second", SortKey::Name, false, 1, 200, false);
+        let search = build_page(
+            &entries,
+            "",
+            "second",
+            "",
+            SortKey::Name,
+            false,
+            1,
+            200,
+            false,
+        );
         assert_eq!(search.entries[0].path, "folder/nested/second.txt");
         let root_folders = child_folders(&entries, "", false);
         assert_eq!(root_folders.len(), 2);
@@ -610,6 +665,22 @@ mod tests {
             "100k browse: {:?}, estimated Rust archive memory: {} MiB",
             started.elapsed(),
             estimated_bytes / 1024 / 1024
+        );
+    }
+
+    #[test]
+    fn filters_and_sorts_by_file_type() {
+        let entries = vec![
+            entry("photo.PNG".to_string(), false, 3),
+            entry("notes.txt".to_string(), false, 2),
+            entry("README".to_string(), false, 1),
+            entry("folder".to_string(), true, 0),
+        ];
+        let filtered = build_page(&entries, "", "", "png", SortKey::Type, false, 1, 200, false);
+        assert_eq!(filtered.entries[0].path, "photo.PNG");
+        assert_eq!(
+            filtered.file_types,
+            ["__file__", "__folder__", "png", "txt"]
         );
     }
 

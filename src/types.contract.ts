@@ -28,6 +28,7 @@ export const archiveDocumentContract = {
 export const entryPageContract = {
   folder: "",
   entries: [archiveEntryContract],
+  fileTypes: ["txt"],
   page: 1,
   pageSize: 200,
   total: 1,

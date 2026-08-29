@@ -3,8 +3,8 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Release notes — Archi 0.4.0</title>
-  <meta name="description" content="Archi 0.4.0 introduces a more native macOS archive browser with a lazy folder sidebar, compact toolbar menus, and stronger privacy on the home screen.">
+  <title>Release notes — Archi 0.5.0</title>
+  <meta name="description" content="Archi 0.5.0 adds drag-and-drop archive workflows, filename and file-type filtering, a quarantine compatibility fix, and public security documentation.">
   <meta name="color-scheme" content="light dark">
   <meta name="theme-color" content="#eef1f5" media="(prefers-color-scheme: light)">
   <meta name="theme-color" content="#17191d" media="(prefers-color-scheme: dark)">
@@ -24,11 +24,12 @@
       <nav class="site-nav" id="site-nav" aria-label="Primary">
         <a href="./index.html#features">Features</a>
         <a href="./formats.html">Formats</a>
+        <a href="./security.html">Security</a>
         <a href="./privacy.html">Privacy</a>
         <a href="https://github.com/gg333/archi">GitHub</a>
       </nav>
       <button class="menu-toggle" type="button" aria-expanded="false" aria-controls="site-nav" aria-label="Open navigation menu"><span></span><span></span><span></span></button>
-      <a class="button button-primary header-download" href="https://github.com/gg333/archi/releases/download/v0.4.0/Archi_0.4.0_universal.dmg" data-download-link>Download</a>
+      <a class="button button-primary header-download" href="https://github.com/gg333/archi/releases/download/v0.5.0/Archi_0.5.0_universal.dmg" data-download-link>Download</a>
     </div>
   </header>
 
@@ -39,25 +40,27 @@
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="15 18 9 12 15 6"/></svg>
           Back to the Archi site
         </a>
-        <h1>Archi 0.4.0 release notes</h1>
+        <h1>Archi 0.5.0 release notes</h1>
         <p class="doc-meta"><strong>Release status:</strong> Production macOS release.</p>
       </header>
 
       <article class="doc-body">
         <p>
-          Archi 0.4.0 introduces a quieter, more native macOS archive browser while
-          preserving Archi's local-first, staged-extraction architecture.
+          Archi 0.5.0 makes everyday archive work faster with drag-and-drop,
+          filename and file-type filtering, and clearer public documentation of
+          Archi's extraction security model.
         </p>
 
         <h2>Highlights</h2>
         <ul>
-          <li>Browse archives in an edge-to-edge macOS window with an overlay toolbar and native traffic lights.</li>
-          <li>Navigate folders from a hideable sidebar that loads only immediate children as folders are expanded.</li>
-          <li>Use compact Add and Extract menus, including explicit Extract Selected and Extract All actions.</li>
-          <li>Open recent archives through the File menu without exposing their paths on the home screen.</li>
-          <li>Close the current archive and return to the home screen without quitting Archi.</li>
-          <li>Follow the system light or dark appearance with native file icons and improved contrast.</li>
-          <li>Open, browse, search, sort, test, and safely extract supported archives without extracting them first.</li>
+          <li>Drag archives onto the home screen to extract them.</li>
+          <li>Drag files and folders onto the home screen to start a new archive.</li>
+          <li>Drag files and folders into an open, editable ZIP or 7z archive to add them.</li>
+          <li>Drag a regular file from an archive directly into Finder to extract a copy there.</li>
+          <li>Filter archive entries by filename or file type and sort the Type column.</li>
+          <li>Keep large listings bounded: filtering, sorting, and paging run in Rust before results cross into the WebView.</li>
+          <li>Browse with native file icons and a lazily loaded folder sidebar.</li>
+          <li>Open, browse, test, and safely extract supported archives without extracting them first.</li>
           <li>Create ZIP and 7z archives from files, folders, mixed selections, and empty folders.</li>
           <li>Create TAR.GZ, TAR.XZ, and TAR.ZST archives plus GZIP, XZ, and Zstandard single-file streams.</li>
           <li>Create encrypted ZIP and 7z archives; 7z supports encrypted file names.</li>
@@ -80,11 +83,13 @@
           <li>Passwords are sent to the bundled engine through standard input, never process arguments or logs.</li>
           <li>Archive contents, names, passwords, and usage data are not uploaded.</li>
           <li>The application uses a restrictive Content Security Policy and narrow Tauri permissions.</li>
+          <li>Quarantine propagation remains strict except when the destination filesystem explicitly reports that extended attributes are unsupported.</li>
+          <li>The public <a href="./security.html">security design</a> documents Archi's threat model, extraction pipeline, implemented controls, and limits.</li>
         </ul>
 
         <h2>Distribution</h2>
         <ul>
-          <li>Product: Archi 0.4.0</li>
+          <li>Product: Archi 0.5.0</li>
           <li>Bundle identifier: <code>com.nitivar.archi</code></li>
           <li>Minimum system: macOS 13</li>
           <li>Build architecture: universal Apple Silicon and Intel</li>
@@ -101,6 +106,9 @@
 
         <h2>Verification completed</h2>
         <ul>
+          <li>Final artifact: <code>Archi_0.5.0_universal.dmg</code></li>
+          <li>SHA-256: <code>07fc1740912019b6392f89ac707cff33be93b3057e3397ed65cbb0bf957c1077</code></li>
+          <li>Apple accepted app submission <code>de6eb095-b6b7-4f8d-bb7b-1d9754c7b79d</code> and DMG submission <code>c0c13dd2-a5ed-4183-be29-4384ff4f80da</code>.</li>
           <li>TypeScript/Vite production build</li>
           <li>Rust formatting and strict Clippy</li>
           <li>Complete Rust unit, engine-contract, and security test suites</li>

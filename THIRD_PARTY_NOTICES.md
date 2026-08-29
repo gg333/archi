@@ -17,6 +17,7 @@ License material supplied in each upstream package is included under `third_part
 
 | Ecosystem | Package | Version | License | Source |
 | --- | --- | --- | --- | --- |
+| JavaScript | @crabnebula/tauri-plugin-drag | 2.1.0 | MIT OR Apache-2.0 | https://github.com/crabnebula-dev/drag-rs |
 | JavaScript | @tauri-apps/api | 2.11.1 | Apache-2.0 OR MIT | git+https://github.com/tauri-apps/tauri.git |
 | JavaScript | @tauri-apps/plugin-dialog | 2.7.2 | MIT OR Apache-2.0 | https://github.com/tauri-apps/plugins-workspace |
 | JavaScript | @tauri-apps/plugin-notification | 2.3.3 | MIT OR Apache-2.0 | https://github.com/tauri-apps/plugins-workspace |
@@ -50,6 +51,7 @@ License material supplied in each upstream package is included under `third_part
 | Rust | cookie | 0.18.2 | MIT OR Apache-2.0 | https://github.com/SergioBenitez/cookie-rs |
 | Rust | core-foundation | 0.10.1 | MIT OR Apache-2.0 | https://github.com/servo/core-foundation-rs |
 | Rust | core-foundation-sys | 0.8.7 | MIT OR Apache-2.0 | https://github.com/servo/core-foundation-rs |
+| Rust | core-graphics | 0.24.0 | MIT OR Apache-2.0 | https://github.com/servo/core-foundation-rs |
 | Rust | core-graphics | 0.25.0 | MIT OR Apache-2.0 | https://github.com/servo/core-foundation-rs |
 | Rust | core-graphics-types | 0.2.0 | MIT OR Apache-2.0 | https://github.com/servo/core-foundation-rs |
 | Rust | cpufeatures | 0.2.17 | MIT OR Apache-2.0 | https://github.com/RustCrypto/utils |
@@ -77,6 +79,7 @@ License material supplied in each upstream package is included under `third_part
 | Rust | displaydoc | 0.2.7 | MIT OR Apache-2.0 | https://github.com/yaahc/displaydoc |
 | Rust | dom_query | 0.27.0 | MIT | https://github.com/niklak/dom_query |
 | Rust | dpi | 0.1.2 | Apache-2.0 AND MIT | https://github.com/rust-windowing/winit |
+| Rust | drag | 2.1.1 | Apache-2.0 OR MIT | registry+https://github.com/rust-lang/crates.io-index |
 | Rust | dtoa | 1.0.11 | MIT OR Apache-2.0 | https://github.com/dtolnay/dtoa |
 | Rust | dtoa-short | 0.3.5 | MPL-2.0 | https://github.com/upsuper/dtoa-short |
 | Rust | dtor | 0.3.0 | Apache-2.0 OR MIT | https://github.com/mmastrac/rust-ctor |
@@ -144,12 +147,18 @@ License material supplied in each upstream package is included under `third_part
 | Rust | num-traits | 0.2.19 | MIT OR Apache-2.0 | https://github.com/rust-num/num-traits |
 | Rust | objc2 | 0.6.4 | MIT | https://github.com/madsmtm/objc2 |
 | Rust | objc2-app-kit | 0.3.2 | Zlib OR Apache-2.0 OR MIT | https://github.com/madsmtm/objc2 |
+| Rust | objc2-cloud-kit | 0.3.2 | Zlib OR Apache-2.0 OR MIT | https://github.com/madsmtm/objc2 |
+| Rust | objc2-core-data | 0.3.2 | Zlib OR Apache-2.0 OR MIT | https://github.com/madsmtm/objc2 |
 | Rust | objc2-core-foundation | 0.3.2 | Zlib OR Apache-2.0 OR MIT | https://github.com/madsmtm/objc2 |
 | Rust | objc2-core-graphics | 0.3.2 | Zlib OR Apache-2.0 OR MIT | https://github.com/madsmtm/objc2 |
+| Rust | objc2-core-image | 0.3.2 | Zlib OR Apache-2.0 OR MIT | https://github.com/madsmtm/objc2 |
+| Rust | objc2-core-text | 0.3.2 | Zlib OR Apache-2.0 OR MIT | https://github.com/madsmtm/objc2 |
+| Rust | objc2-core-video | 0.3.2 | Zlib OR Apache-2.0 OR MIT | https://github.com/madsmtm/objc2 |
 | Rust | objc2-encode | 4.1.0 | MIT | https://github.com/madsmtm/objc2 |
 | Rust | objc2-exception-helper | 0.1.1 | Zlib OR Apache-2.0 OR MIT | https://github.com/madsmtm/objc2 |
 | Rust | objc2-foundation | 0.3.2 | MIT | https://github.com/madsmtm/objc2 |
 | Rust | objc2-io-surface | 0.3.2 | Zlib OR Apache-2.0 OR MIT | https://github.com/madsmtm/objc2 |
+| Rust | objc2-quartz-core | 0.3.2 | Zlib OR Apache-2.0 OR MIT | https://github.com/madsmtm/objc2 |
 | Rust | objc2-web-kit | 0.3.2 | Zlib OR Apache-2.0 OR MIT | https://github.com/madsmtm/objc2 |
 | Rust | once_cell | 1.21.4 | MIT OR Apache-2.0 | https://github.com/matklad/once_cell |
 | Rust | option-ext | 0.2.0 | MPL-2.0 | https://github.com/soc/option-ext.git |
@@ -221,6 +230,7 @@ License material supplied in each upstream package is included under `third_part
 | Rust | tauri-codegen | 2.6.3 | Apache-2.0 OR MIT | https://github.com/tauri-apps/tauri |
 | Rust | tauri-macros | 2.6.3 | Apache-2.0 OR MIT | https://github.com/tauri-apps/tauri |
 | Rust | tauri-plugin-dialog | 2.7.2 | Apache-2.0 OR MIT | https://github.com/tauri-apps/plugins-workspace |
+| Rust | tauri-plugin-drag | 2.1.1 | Apache-2.0 OR MIT | registry+https://github.com/rust-lang/crates.io-index |
 | Rust | tauri-plugin-fs | 2.5.1 | Apache-2.0 OR MIT | https://github.com/tauri-apps/plugins-workspace |
 | Rust | tauri-plugin-notification | 2.3.3 | Apache-2.0 OR MIT | https://github.com/tauri-apps/plugins-workspace |
 | Rust | tauri-runtime | 2.11.3 | Apache-2.0 OR MIT | https://github.com/tauri-apps/tauri |

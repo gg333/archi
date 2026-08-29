@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Security design — Archi</title>
+  <meta name="description" content="How Archi validates untrusted archives, stages extraction, enforces safety limits, installs files, preserves quarantine, and restricts previews.">
+  <meta name="color-scheme" content="light dark">
+  <meta name="theme-color" content="#eef1f5" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#17191d" media="(prefers-color-scheme: dark)">
+  <link rel="icon" type="image/png" href="assets/favicon.png">
+  <link rel="canonical" href="https://gg333.github.io/archi/security.html">
+  <link rel="stylesheet" href="assets/styles.css">
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+
+  <header class="site-header" id="site-header">
+    <div class="container site-header-inner">
+      <a class="brand" href="./index.html">
+        <img class="brand-icon" src="assets/app-icon.png" alt="">
+        <span>Archi</span>
+      </a>
+      <nav class="site-nav" id="site-nav" aria-label="Primary">
+        <a href="./index.html#features">Features</a>
+        <a href="./formats.html">Formats</a>
+        <a href="./security.html" aria-current="page">Security</a>
+        <a href="./privacy.html">Privacy</a>
+        <a href="https://github.com/gg333/archi">GitHub</a>
+      </nav>
+      <button class="menu-toggle" type="button" aria-expanded="false" aria-controls="site-nav" aria-label="Open navigation menu"><span></span><span></span><span></span></button>
+      <a class="button button-primary header-download" href="https://github.com/gg333/archi/releases/download/v0.5.0/Archi_0.5.0_universal.dmg" data-download-link>Download</a>
+    </div>
+  </header>
+
+  <main id="main">
+    <div class="container">
+      <header class="doc-header">
+        <a class="doc-back" href="./index.html">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="15 18 9 12 15 6"/></svg>
+          Back to the Archi site
+        </a>
+        <h1>Security design</h1>
+        <p class="doc-meta"><strong>Applies to:</strong> Archi 0.5.x · <strong>Last reviewed:</strong> 30 August 2026</p>
+      </header>
+
+      <article class="doc-body">
+        <p class="doc-intro">
+          Archives combine untrusted bytes, file names, metadata, and compressed
+          output. Archi therefore validates both what an archive declares and what
+          extraction actually creates before payload files reach your destination.
+        </p>
+        <p>
+          This page describes implemented controls and their limits. It is not a
+          claim of formal verification or an independent security audit. The
+          <a href="https://github.com/gg333/archi/blob/main/docs/SECURITY_DESIGN.md">repository document</a>
+          links each control to its source and tests.
+        </p>
+
+        <h2>Threat model and boundaries</h2>
+        <p>
+          Archi treats archive contents, entry names, declared sizes, links, 7-Zip
+          listing output, and extracted files as untrusted. The WebView displays
+          paginated metadata and progress; Rust owns process execution, filesystem
+          traversal, validation, and installation. The main window has a
+          <a href="https://github.com/gg333/archi/blob/main/src-tauri/capabilities/default.json">narrow Tauri permission set</a>.
+        </p>
+        <p>
+          Archi trusts the installed application, macOS, the current user account,
+          and the bundled 7-Zip executable. The 7-Zip child process is not an
+          operating-system sandbox. A vulnerability in 7-Zip could execute before
+          Archi can validate its output.
+        </p>
+
+        <h2>Extraction architecture</h2>
+        <ol class="security-flow" aria-label="Archi extraction security pipeline">
+          <li><strong>List</strong><span>7-Zip reads the untrusted archive and emits technical metadata.</span></li>
+          <li><strong>Validate declarations</strong><span>Rust rejects unsafe paths, links, depth, count, and normalized-name collisions.</span></li>
+          <li><strong>Stage</strong><span>Extraction writes into a job-owned temporary directory, not the destination.</span></li>
+          <li><strong>Monitor</strong><span>Rust checks actual expanded bytes and kills the child process when the configured ceiling is crossed.</span></li>
+          <li><strong>Validate output</strong><span>The real filesystem tree is checked for links, special files, escapes, limits, and collisions.</span></li>
+          <li><strong>Install</strong><span>Conflicts and source overlap are preflighted, then regular files are installed through destination-local temporary files.</span></li>
+        </ol>
+
+        <h2>Listing and metadata validation</h2>
+        <p>
+          Archi lists before extracting. Its strict technical-list parser rejects
+          lines it cannot represent rather than guessing. Declared paths must be
+          relative and use safe components; links are disabled; depth is limited to
+          100 components; and the entry ceiling is 1,000,000. Case folding and
+          Unicode normalization detect names that would collide on common
+          filesystems. Declared expansion is compared with the configured limit,
+          and an unknown or excessive total requires explicit approval.
+          <a href="https://github.com/gg333/archi/blob/main/src-tauri/src/safe_paths.rs#L450-L813">Source and validation rules</a>.
+        </p>
+
+        <h2>Private staged extraction and actual-output limits</h2>
+        <p>
+          7-Zip writes into a job-owned temporary payload directory. While the
+          process runs, Rust periodically measures actual output and terminates the
+          child if the configured byte ceiling is exceeded. It checks once more
+          after the engine exits. The completed tree is then inspected directly;
+          symbolic links, hard links, special files, unsafe paths, excessive depth,
+          excessive entry count, and normalized collisions are rejected.
+          <a href="https://github.com/gg333/archi/blob/main/src-tauri/src/jobs.rs#L331-L360">Extraction monitor</a>
+          and <a href="https://github.com/gg333/archi/blob/main/src-tauri/tests/security.rs">security tests</a>.
+        </p>
+
+        <h2>Destination and archive integrity</h2>
+        <p>
+          Before installation, Archi resolves conflicts and refuses to overwrite the
+          source archive. Each regular file is copied to a temporary file beside its
+          final destination. New files use no-clobber persistence; replacement keeps
+          a backup and restores it if installation fails.
+          <a href="https://github.com/gg333/archi/blob/main/src-tauri/src/safe_paths.rs#L816-L1035">Destination installation source</a>.
+        </p>
+        <p>
+          Archive modifications operate on a temporary copy beside the original.
+          Archi detects if the source changes during the operation, validates the
+          rewritten archive, preserves a backup during replacement, synchronizes the
+          result, and reports a recoverable copy if commit fails.
+          <a href="https://github.com/gg333/archi/blob/main/src-tauri/src/safe_paths.rs#L44-L175">Archive rewrite source</a>.
+        </p>
+
+        <h2>macOS quarantine</h2>
+        <p>
+          When a source archive carries <code>com.apple.quarantine</code>, Archi
+          propagates it to staged output, installed files, previews, and rewritten
+          archives. If the destination filesystem explicitly reports that extended
+          attributes are unsupported, propagation is skipped because the filesystem
+          cannot store the attribute. Permission, read-only, storage, and other I/O
+          failures remain fatal.
+          <a href="https://github.com/gg333/archi/blob/main/src-tauri/src/safe_paths/quarantine.rs#L134-L171">Quarantine source and regression test</a>.
+        </p>
+
+        <h2>Open and Quick Look restrictions</h2>
+        <p>
+          Open and Quick Look extract one selected regular file into an owner-only
+          preview cache. Archi requires a declared size within the configured limit,
+          validates the actual extracted file, and blocks directories, links, special
+          files, executable extensions, executable permission bits, scripts, Mach-O,
+          PE, and ELF payloads. File contents are never sent through the WebView.
+          <a href="https://github.com/gg333/archi/blob/main/src-tauri/src/safe_paths.rs#L348-L449">Preview validation</a>.
+        </p>
+        <p>
+          These restrictions apply to Open and Quick Look. They do not prevent a user
+          from extracting an executable and launching it manually.
+        </p>
+
+        <h2>What this design cannot guarantee</h2>
+        <ul>
+          <li>It cannot sandbox or eliminate vulnerabilities in 7-Zip, macOS, Tauri, WebKit, or other dependencies.</li>
+          <li>It is not antivirus software and does not classify malware or guarantee that another application can safely open a document.</li>
+          <li>Resource use during listing and explicitly approved unbounded extraction cannot be fully constrained.</li>
+          <li>ACLs, ownership, extended attributes, and platform-specific metadata do not round-trip across every format or filesystem.</li>
+          <li>Signing, notarization, hardened runtime, Content Security Policy, and narrow permissions reduce risk but do not create an App Sandbox around 7-Zip.</li>
+        </ul>
+        <p>
+          See the <a href="https://github.com/gg333/archi/blob/main/docs/KNOWN_LIMITATIONS.md">known limitations</a>
+          for the broader product boundary.
+        </p>
+
+        <h2>Reporting vulnerabilities</h2>
+        <p>
+          Please use
+          <a href="https://github.com/gg333/archi/security/advisories/new">GitHub private vulnerability reporting</a>
+          rather than opening a public issue. Archi aims to acknowledge reports within
+          five business days and provide an initial assessment within ten business
+          days. Full instructions are in the
+          <a href="https://github.com/gg333/archi/blob/main/SECURITY.md">security policy</a>.
+        </p>
+      </article>
+    </div>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container">
+      <div class="footer-legal">
+        <span>© 2026 Nitivar. The Archi name, logo, and icons are reserved brand assets.</span>
+        <span><a href="./index.html">Archi site</a> · <a href="./privacy.html">Privacy</a> · <a href="https://github.com/gg333/archi">GitHub</a></span>
+      </div>
+    </div>
+  </footer>
+
+  <script src="assets/site.js"></script>
+</body>
+</html>

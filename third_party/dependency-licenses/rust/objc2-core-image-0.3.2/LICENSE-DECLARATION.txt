@@ -1,0 +1,3 @@
+objc2-core-image 0.3.2
+License declared by package manifest: Zlib OR Apache-2.0 OR MIT
+Source: https://github.com/madsmtm/objc2

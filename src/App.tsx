@@ -3,12 +3,13 @@ import { getVersion } from "@tauri-apps/api/app";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { startDrag } from "@crabnebula/tauri-plugin-drag";
 import { confirm, open, save } from "@tauri-apps/plugin-dialog";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
 import {
   addToArchive, archiveChanged, archiveError, archiveFolders, cancelJob, clearDiagnostics, clearRecentArchives,
   createArchive, defaultZipOutput, deleteArchiveEntries, entryIcons, entryPage, exportDiagnostics,
-  extractArchive, getSettings, jobStatus, openArchive, openArchiveEntry, openDestination, recentArchives,
+  extractArchive, getSettings, jobStatus, openArchive, openArchiveEntry, openDestination, prepareArchiveEntry, recentArchives,
   recordDiagnostic, renameArchiveEntry, resetSettings, saveSettings, setArchiveComment,
   shellIntegrationStatus, takeShellRequests, testArchive,
 } from "./api";
@@ -21,7 +22,7 @@ import "./App.css";
 import { Modal } from "./components/Modal";
 import { ExtractDialog as ExtractPanel, JobShelf, PasswordDialog } from "./components/OperationPanels";
 import { PopupMenu } from "./components/PopupMenu";
-import { drainShellRequests } from "./shellRequests";
+import { drainShellRequests, fileDropAction } from "./shellRequests";
 import appIcon from "../src-tauri/icons/128x128@2x.png";
 
 const PAGE_SIZE = 200;
@@ -60,6 +61,7 @@ type Operation = "opening" | "extracting" | "creating" | "testing" | "modifying"
 type PasswordAction =
   | { kind: "open"; path: string }
   | { kind: "entry"; path: string; entry: string; quickLook: boolean }
+  | { kind: "drag"; path: string; entry: string }
   | { kind: "extract"; path: string; destination: string; entries: string[]; reveal: boolean; conflictPolicy?: ConflictPolicy }
   | { kind: "test"; path: string }
   | { kind: "add"; path: string; inputs: string[]; compression: CompressionLevel }
@@ -83,6 +85,7 @@ function App() {
   const [extractMenuOpen, setExtractMenuOpen] = useState(false);
   const [moreOpen, setMoreOpen] = useState(false);
   const [query, setQuery] = useState("");
+  const [fileType, setFileType] = useState("");
   const [sort, setSort] = useState<SortKey>("name");
   const [descending, setDescending] = useState(false);
   const [pageNumber, setPageNumber] = useState(1);
@@ -132,13 +135,18 @@ function App() {
   const shellBusy = useRef(false);
   const requestedIcons = useRef(new Set<string>());
   const archivePathRef = useRef<string | null>(null);
-  archivePathRef.current = archive?.path ?? null;
+  const preparedDrag = useRef<{ archive: string; entry: string; path: string } | null>(null);
+  const draggingOut = useRef(false);
   const busy = operation !== null;
   const selectedEntries = useMemo(
     () => entries?.entries.filter((entry) => selected.has(entry.path)) ?? [],
     [entries, selected],
   );
   const selectedSize = selectedEntries.reduce((total, entry) => total + (entry.size ?? 0), 0);
+
+  useEffect(() => {
+    archivePathRef.current = archive?.path ?? null;
+  }, [archive?.path]);
 
   useEffect(() => {
     void getVersion().then(setAppVersion).catch(() => undefined);
@@ -196,7 +204,7 @@ function App() {
     let active = true;
     const timer = window.setTimeout(() => {
       void entryPage(
-        archive.path, folder, query, sort, descending, pageNumber, PAGE_SIZE,
+        archive.path, folder, query, fileType, sort, descending, pageNumber, PAGE_SIZE,
         settings.showHiddenEntries,
       ).then((value) => {
         if (!active) return;
@@ -205,7 +213,7 @@ function App() {
       }).catch((caught) => active && setError(archiveError(caught)));
     }, query ? 150 : 0);
     return () => { active = false; window.clearTimeout(timer); };
-  }, [archive, folder, query, sort, descending, pageNumber, settings.showHiddenEntries]);
+  }, [archive, folder, query, fileType, sort, descending, pageNumber, settings.showHiddenEntries]);
 
   useEffect(() => {
     if (!archive) {
@@ -277,18 +285,21 @@ function App() {
     let disposed = false;
     let unlisten: (() => void) | undefined;
     void getCurrentWebview().onDragDropEvent((event) => {
+      if (draggingOut.current) { setDragActive(false); return; }
       if (event.payload.type === "enter" || event.payload.type === "over") setDragActive(true);
       else if (event.payload.type === "leave") setDragActive(false);
       else if (event.payload.type === "drop") {
         setDragActive(false);
         const paths = event.payload.paths;
-        if (!paths.length || busy) return;
-        if (!createOpen && paths.length === 1 && isArchivePath(paths[0])) void loadArchive(paths[0]);
-        else { addCreateInputs(paths); setCreateOpen(true); }
+        if (busy) return;
+        const action = fileDropAction(paths, createOpen, archive?.canModify === true, isArchivePath);
+        if (action === "add") void requestArchiveAdditions(paths);
+        else if (action === "extract") void runShellExtractions(paths, null);
+        else if (action === "create") { addCreateInputs(paths); setCreateOpen(true); }
       }
     }).then((remove) => { if (disposed) remove(); else unlisten = remove; });
     return () => { disposed = true; unlisten?.(); };
-  }, [busy, createOpen]);
+  }, [archive, archiveNeedsPassword, busy, createOpen, settings]);
 
   useEffect(() => {
     const shortcut = (event: KeyboardEvent) => {
@@ -438,6 +449,7 @@ function App() {
   }
 
   function installDocument(document: ArchiveDocument, passwordProvided: boolean) {
+    preparedDrag.current = null;
     setArchive(document);
     setCommentDraft(document.comment ?? "");
     setArchiveNeedsPassword(passwordProvided || document.encrypted);
@@ -445,6 +457,7 @@ function App() {
   }
 
   function closeArchive() {
+    preparedDrag.current = null;
     setArchive(null); setEntries(null); setCommentDraft(""); setArchiveNeedsPassword(false);
     setArchiveOutdated(false); setMonitorChanges(false); setEntryMenu(null); setPropertiesEntry(null);
     setRenameDialog(null); setCommentOpen(false); setExtractDialog(null); clearPasswordPrompt();
@@ -452,12 +465,12 @@ function App() {
   }
 
   function resetBrowser() {
-    setFolder(""); setFolderHistory([""]); setFolderHistoryIndex(0); setQuery("");
+    setFolder(""); setFolderHistory([""]); setFolderHistoryIndex(0); setQuery(""); setFileType("");
     setPageNumber(1); setSelected(new Set()); setLastSelected(null);
   }
 
   function navigateFolder(next: string) {
-    setFolder(next); setQuery(""); setPageNumber(1); setSelected(new Set());
+    setFolder(next); setQuery(""); setFileType(""); setPageNumber(1); setSelected(new Set());
     setFolderHistory((current) => {
       const history = [...current.slice(0, folderHistoryIndex + 1), next];
       setFolderHistoryIndex(history.length - 1);
@@ -488,7 +501,7 @@ function App() {
   function moveHistory(nextIndex: number) {
     const next = folderHistory[nextIndex];
     if (next === undefined) return;
-    setFolderHistoryIndex(nextIndex); setFolder(next); setQuery(""); setPageNumber(1); setSelected(new Set());
+    setFolderHistoryIndex(nextIndex); setFolder(next); setQuery(""); setFileType(""); setPageNumber(1); setSelected(new Set());
   }
 
   function goUp() {
@@ -533,6 +546,41 @@ function App() {
       }
       return false;
     } finally { setOperation(null); }
+  }
+
+  async function requestEntryDrag(entry: ArchiveEntry, suppliedPassword?: string, start = true): Promise<boolean> {
+    if (!archive || busy || entry.isDirectory || entry.isLink) { draggingOut.current = false; return false; }
+    setOperation("opening"); setError(null); setStatus(`Preparing ${leafName(entry.path)} to drag…`);
+    try {
+      const cached = preparedDrag.current;
+      const path = cached?.archive === archive.path && cached.entry === entry.path
+        ? cached.path
+        : await prepareArchiveEntry(archive.path, entry.path, suppliedPassword);
+      preparedDrag.current = { archive: archive.path, entry: entry.path, path };
+      clearPasswordPrompt();
+      if (!start) {
+        setStatus(`${leafName(entry.path)} is ready. Drag it to Finder again.`);
+        return true;
+      }
+      const key = entryIconKey(entry);
+      const icon = nativeIcons[key] ?? (await entryIcons([key]))[key] ?? await imageDataUrl(appIcon);
+      await startDrag({ item: [path], icon, mode: "copy" }, ({ result }) => {
+        draggingOut.current = false; setDragActive(false);
+        setStatus(result === "Dropped" ? `${leafName(entry.path)} extracted by drag.` : "File drag cancelled.");
+      });
+      return true;
+    } catch (caught) {
+      draggingOut.current = false; setDragActive(false);
+      const failure = archiveError(caught);
+      if (isPasswordError(failure)) {
+        setPasswordError(suppliedPassword === undefined ? null : failure.message);
+        setPasswordAction({ kind: "drag", path: archive.path, entry: entry.path });
+        setStatus(suppliedPassword === undefined ? "Enter the archive password, then drag the file again." : "The password was not accepted. Try again.");
+      } else {
+        setError(failure); setStatus("Could not prepare the file for dragging."); clearPasswordPrompt();
+      }
+      return false;
+    } finally { setOperation(null); setJob(null); }
   }
 
   async function chooseExtractFolder(paths: string[]) {
@@ -622,7 +670,11 @@ function App() {
       title: directory ? "Add Folders to Archive" : "Add Files to Archive",
     });
     if (!paths) return;
-    const inputs = Array.isArray(paths) ? paths : [paths];
+    await requestArchiveAdditions(Array.isArray(paths) ? paths : [paths]);
+  }
+
+  async function requestArchiveAdditions(inputs: string[]) {
+    if (!archive?.canModify || !inputs.length) return;
     const level = compressionFor(archive.path.toLowerCase().endsWith(".zip") ? "zip" : "sevenZip", settings);
     if (archiveNeedsPassword) {
       setPasswordError(null);
@@ -731,6 +783,14 @@ function App() {
     else if (passwordAction.kind === "entry") {
       const entry = entries?.entries.find((candidate) => candidate.path === passwordAction.entry);
       if (entry) await requestEntryOpen(entry, passwordAction.quickLook, password);
+      else {
+        setError({ code: "entry_not_found", message: "The archive entry is no longer visible." });
+        clearPasswordPrompt();
+      }
+    }
+    else if (passwordAction.kind === "drag") {
+      const entry = entries?.entries.find((candidate) => candidate.path === passwordAction.entry);
+      if (entry) await requestEntryDrag(entry, password, false);
       else {
         setError({ code: "entry_not_found", message: "The archive entry is no longer visible." });
         clearPasswordPrompt();
@@ -889,7 +949,11 @@ function App() {
       {!archive && <header className="welcome-toolbar" data-tauri-drag-region>
         <div className="welcome-title" data-tauri-drag-region><strong>Archi</strong></div>
       </header>}
-      {dragActive && <div className="drop-overlay" role="status">Drop an archive to open it, or files and folders to create one</div>}
+      {dragActive && <div className="drop-overlay" role="status">{createOpen
+        ? "Drop files or folders to include in the new archive"
+        : archive?.canModify
+          ? `Drop files or folders to add to ${archive.name}`
+          : "Drop archives to extract, or files and folders to compress"}</div>}
       {error && <section className="error-banner" role="alert"><div><strong>{error.code.replace(/_/g, " ")}</strong><p>{error.message}</p></div><button className="icon-button" onClick={() => setError(null)} aria-label="Dismiss error"><Icon name="close" /></button></section>}
       {archiveOutdated && archive && <section className="change-banner" role="alert"><div><strong>Archive changed on disk</strong><p>Reload to browse the current file. No archive contents have been edited by this app.</p></div><div className="header-actions"><button onClick={() => { setArchiveOutdated(false); setMonitorChanges(false); }}>Keep browsing</button><button className="primary-button" onClick={() => void loadArchive(archive.path)}>Reload</button></div></section>}
       {job && <JobShelf job={job} onCancel={() => void requestCancellation()} />}
@@ -906,8 +970,8 @@ function App() {
           <div className="toolbar-actions">
             <label className="toolbar-search">
               <Icon name="search" className="search-icon" />
-              <span className="sr-only">Search entry names</span>
-              <input ref={searchRef} type="search" value={query} onChange={(event) => { setQuery(event.target.value); setPageNumber(1); setSelected(new Set()); }} placeholder="Search" />
+              <span className="sr-only">Filter by filename</span>
+              <input ref={searchRef} type="search" value={query} onChange={(event) => { setQuery(event.target.value); setPageNumber(1); setSelected(new Set()); }} placeholder="Filter by name" />
               {query && <button type="button" className="search-clear" aria-label="Clear search" onClick={() => { setQuery(""); setPageNumber(1); setSelected(new Set()); searchRef.current?.focus(); }}><Icon name="close" /></button>}
             </label>
             {archive.canModify && <PopupMenu label="Add to archive" open={addMenuOpen} onOpenChange={setAddMenuOpen} disabled={busy} triggerClassName="toolbar-label-button" trigger={<><Icon name="add" /><span>Add</span><Icon name="disclosureDown" /></>}>
@@ -929,15 +993,16 @@ function App() {
         </div>
         <div className="browser-bar">
           <nav className="breadcrumbs" aria-label="Archive folder"><button onClick={() => navigateFolder("")} aria-current={!folder ? "page" : undefined}>{archive.name}</button>{crumbs.map((crumb, index) => { const path = crumbs.slice(0, index + 1).join("/"); return <span key={path}><span aria-hidden="true">/</span><button onClick={() => navigateFolder(path)} aria-current={path === folder ? "page" : undefined}>{crumb}</button></span>; })}</nav>
+          <label className="type-filter"><span>Type</span><select value={fileType} onChange={(event) => { setFileType(event.target.value); setPageNumber(1); setSelected(new Set()); }}><option value="">All types</option>{fileType && !entries?.fileTypes.includes(fileType) && <option value={fileType}>{fileTypeLabel(fileType)}</option>}{entries?.fileTypes.map((type) => <option key={type} value={type}>{fileTypeLabel(type)}</option>)}</select></label>
         </div>
         <div className={`browser-content${sidebarVisible ? " with-sidebar" : ""}`}>
           {sidebarVisible && <aside className="folder-sidebar" aria-label="Archive folders">
             <button className={`sidebar-root${folder === "" ? " active" : ""}`} onClick={() => navigateFolder("")}><Icon name="archive" /><span>{archive.name}</span></button>
             <FolderTree nodes={folderChildren[""] ?? []} childrenByFolder={folderChildren} activePath={folder} expanded={expandedFolders} onToggle={(node) => void toggleFolder(node)} onNavigate={navigateFolder} />
           </aside>}
-          <div className="table-wrap"><table><thead><tr><SortableHeader label="Name" value="name" current={sort} descending={descending} onSort={changeSort} /><th>Type</th><SortableHeader label="Size" value="size" current={sort} descending={descending} onSort={changeSort} /><SortableHeader label="Compressed" value="packedSize" current={sort} descending={descending} onSort={changeSort} /><SortableHeader label="Ratio" value="ratio" current={sort} descending={descending} onSort={changeSort} /><SortableHeader label="Modified" value="modified" current={sort} descending={descending} onSort={changeSort} /><th>Encrypted</th></tr></thead>
-          <tbody>{entries?.entries.map((entry, index) => <tr key={entry.path} data-entry={entry.path} tabIndex={index === 0 || selected.has(entry.path) ? 0 : -1} aria-selected={selected.has(entry.path)} aria-label={entryLabel(entry)} className={selected.has(entry.path) ? "selected" : undefined} onClick={(event) => selectEntry(event, entry)} onKeyDown={(event) => handleRowKey(event, index, entry)} onDoubleClick={() => entry.isDirectory ? navigateFolder(entry.path) : void requestEntryOpen(entry, false)} onContextMenu={(event) => { event.preventDefault(); setSelected(new Set([entry.path])); setEntryMenu(contextMenuPosition(event, entry)); }} title={entry.isDirectory ? "Double-click to open; right-click for actions" : "Double-click to open; press Spacebar for Quick Look"}>
-            <td className="entry-name" title={entry.path}><EntryIcon entry={entry} source={nativeIcons[entryIconKey(entry)]} />{leafName(entry.path)}{query && parentEntryPath(entry.path) && <small>{parentEntryPath(entry.path)}</small>}</td><td>{entry.isLink ? "Link" : entry.isDirectory ? "Folder" : entry.method ?? "File"}</td><td>{entry.size === null ? "—" : formatBytes(entry.size)}</td><td>{entry.packedSize === null ? "—" : formatBytes(entry.packedSize)}</td><td>{formatRatio(entry)}</td><td>{entry.modified ?? "—"}</td><td>{entry.encrypted ? "Yes" : "No"}</td>
+          <div className="table-wrap"><table><thead><tr><SortableHeader label="Name" value="name" current={sort} descending={descending} onSort={changeSort} /><SortableHeader label="Type" value="type" current={sort} descending={descending} onSort={changeSort} /><SortableHeader label="Size" value="size" current={sort} descending={descending} onSort={changeSort} /><SortableHeader label="Compressed" value="packedSize" current={sort} descending={descending} onSort={changeSort} /><SortableHeader label="Ratio" value="ratio" current={sort} descending={descending} onSort={changeSort} /><SortableHeader label="Modified" value="modified" current={sort} descending={descending} onSort={changeSort} /><th>Encrypted</th></tr></thead>
+          <tbody>{entries?.entries.map((entry, index) => <tr key={entry.path} data-entry={entry.path} draggable={!busy && !entry.isDirectory && !entry.isLink} tabIndex={index === 0 || selected.has(entry.path) ? 0 : -1} aria-selected={selected.has(entry.path)} aria-label={entryLabel(entry)} className={selected.has(entry.path) ? "selected" : undefined} onClick={(event) => selectEntry(event, entry)} onDragStart={(event) => { event.preventDefault(); draggingOut.current = true; setDragActive(false); setSelected(new Set([entry.path])); void requestEntryDrag(entry); }} onKeyDown={(event) => handleRowKey(event, index, entry)} onDoubleClick={() => entry.isDirectory ? navigateFolder(entry.path) : void requestEntryOpen(entry, false)} onContextMenu={(event) => { event.preventDefault(); setSelected(new Set([entry.path])); setEntryMenu(contextMenuPosition(event, entry)); }} title={entry.isDirectory ? "Double-click to open; right-click for actions" : "Double-click to open; drag to Finder to extract; press Spacebar for Quick Look"}>
+            <td className="entry-name" title={entry.path}><EntryIcon entry={entry} source={nativeIcons[entryIconKey(entry)]} />{leafName(entry.path)}{query && parentEntryPath(entry.path) && <small>{parentEntryPath(entry.path)}</small>}</td><td>{entryTypeLabel(entry)}</td><td>{entry.size === null ? "—" : formatBytes(entry.size)}</td><td>{entry.packedSize === null ? "—" : formatBytes(entry.packedSize)}</td><td>{formatRatio(entry)}</td><td>{entry.modified ?? "—"}</td><td>{entry.encrypted ? "Yes" : "No"}</td>
           </tr>)}{entries?.total === 0 && <tr><td colSpan={7} className="no-results">No entries match this view.</td></tr>}</tbody></table></div>
         </div>
         <footer className="status-bar"><span aria-live="polite">{status}</span><div className="page-controls"><span>{selected.size ? `${selected.size.toLocaleString()} selected · ${formatBytes(selectedSize)} · ` : ""}{entries ? `${entries.total.toLocaleString()} items · Page ${entries.page} of ${entries.totalPages}` : "Loading…"}</span><button aria-label="Previous page" onClick={() => setPageNumber((value) => Math.max(1, value - 1))} disabled={!entries || entries.page <= 1}><Icon name="back" /></button><button aria-label="Next page" onClick={() => setPageNumber((value) => value + 1)} disabled={!entries || entries.page >= entries.totalPages}><Icon name="forward" /></button></div></footer>
@@ -950,7 +1015,7 @@ function App() {
             <button className="primary-button" onClick={chooseArchive} disabled={busy}><Icon name="open" /><span>Open Archive…</span></button>
             <button onClick={openCreateDialog} disabled={busy}><Icon name="add" /><span>New Archive…</span></button>
           </div>
-          <p className="drop-hint">Drop an archive anywhere</p>
+          <p className="drop-hint">Drop archives to extract, or files and folders to compress</p>
         </div>
         <span className="empty-status" role="status">{status}</span>
       </section>}
@@ -1039,10 +1104,22 @@ function isArchivePath(path: string) {
   return extension === "001" ? lower.endsWith(".zip.001") || lower.endsWith(".7z.001") : extension !== undefined && archiveFilters.includes(extension);
 }
 function entryIconKey(entry: ArchiveEntry) {
-  if (entry.isDirectory) return "__folder__";
+  const type = entryFileTypeKey(entry);
+  return type.startsWith("__") || /^[a-z0-9]{1,16}$/.test(type) ? type : "__file__";
+}
+function entryFileTypeKey(entry: ArchiveEntry) {
   if (entry.isLink) return "__link__";
-  const extension = entry.path.toLowerCase().split(".").pop() ?? "";
-  return /^[a-z0-9]{1,16}$/.test(extension) ? extension : "__file__";
+  if (entry.isDirectory) return "__folder__";
+  const name = leafName(entry.path).toLowerCase();
+  const dot = name.lastIndexOf(".");
+  return dot > 0 && dot < name.length - 1 ? name.slice(dot + 1) : "__file__";
+}
+function entryTypeLabel(entry: ArchiveEntry) { return fileTypeLabel(entryFileTypeKey(entry), false); }
+function fileTypeLabel(type: string, plural = true) {
+  if (type === "__folder__") return plural ? "Folders" : "Folder";
+  if (type === "__link__") return plural ? "Links" : "Link";
+  if (type === "__file__") return plural ? "Files without extension" : "File";
+  return plural ? `${type.toUpperCase()} files` : type.toUpperCase();
 }
 function EntryIcon({ entry, source }: { entry: ArchiveEntry; source?: string }) {
   if (source) return <img className="entry-icon" src={source} alt="" aria-hidden="true" />;
@@ -1075,6 +1152,15 @@ function siblingExtractionPath(path: string, name: string) {
   return `${parent}${separator}${folder}`;
 }
 function entryLabel(entry: ArchiveEntry) { return [leafName(entry.path), entry.isDirectory ? "folder" : "file", entry.size === null ? "unknown size" : formatBytes(entry.size), entry.encrypted ? "encrypted" : "not encrypted"].join(", "); }
+async function imageDataUrl(url: string): Promise<string> {
+  const blob = await fetch(url).then((response) => response.blob());
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result));
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(blob);
+  });
+}
 function formatBytes(bytes: number) {
   if (bytes < 1024) return `${bytes.toLocaleString()} B`;
   const units = ["KB", "MB", "GB", "TB"];

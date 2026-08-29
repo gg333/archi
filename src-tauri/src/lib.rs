@@ -189,6 +189,7 @@ pub fn run() {
     const SETTINGS_MENU_ID: &str = "settings";
 
     let app = tauri::Builder::default()
+        .plugin(tauri_plugin_drag::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
         .manage(jobs::JobManager::default())
@@ -313,6 +314,7 @@ pub fn run() {
             commands::open_archive,
             commands::start_extract,
             commands::open_archive_entry,
+            commands::prepare_archive_entry,
             commands::create_archive,
             commands::add_to_archive,
             commands::delete_archive_entries,
