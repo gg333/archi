@@ -30,7 +30,7 @@ serde_json = "=1.0.151"
 tempfile = "=3.27.0"
 unicode-normalization = "=0.1.25"
 zeroize = "=1.9.0"
-zstd = "=0.13.3"
+zstd = "=0.14.0"
 
 [patch.crates-io]
 # Tauri's GTK3 stack still requires glib 0.18. This local copy backports
