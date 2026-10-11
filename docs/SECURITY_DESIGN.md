@@ -1,8 +1,7 @@
 # Archi security design
 
-This document describes the security boundaries and extraction controls in the
-development version of Archi that follows 0.5.0. It is a description of the
-current implementation, not a claim of formal verification or an independent
+This document describes the security boundaries and extraction controls in
+Archi 0.6.x. It is a description of the current implementation, not a claim of formal verification or an independent
 security audit.
 
 Report suspected vulnerabilities privately as described in

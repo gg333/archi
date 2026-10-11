@@ -3,8 +3,8 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Release notes — Archi 0.5.0</title>
-  <meta name="description" content="Archi 0.5.0 adds drag-and-drop archive workflows, filename and file-type filtering, a quarantine compatibility fix, and public security documentation.">
+  <title>Release notes — Archi 0.6.0</title>
+  <meta name="description" content="Archi 0.6.0 opens compressed tarballs directly, extracts archives that contain links, improves in-place editing and Finder integration, and fixes problems found in a review of 0.5.0.">
   <meta name="color-scheme" content="light dark">
   <meta name="theme-color" content="#eef1f5" media="(prefers-color-scheme: light)">
   <meta name="theme-color" content="#17191d" media="(prefers-color-scheme: dark)">
@@ -40,61 +40,83 @@
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="15 18 9 12 15 6"/></svg>
           Back to the Archi site
         </a>
-        <h1>Archi 0.5.0 release notes</h1>
-        <p class="doc-meta"><strong>Release status:</strong> Production macOS release.</p>
+        <h1>Archi 0.6.0 release notes</h1>
+        <p class="doc-meta"><strong>Release status:</strong> Draft. Archi 0.6.0 has not been released.</p>
       </header>
 
       <article class="doc-body">
         <p>
-          Archi 0.5.0 makes everyday archive work faster with drag-and-drop,
-          filename and file-type filtering, and clearer public documentation of
-          Archi's extraction security model.
+          Archi 0.6.0 opens compressed tarballs directly, extracts archives that contain links, edits archives in place more naturally, and fixes a set of problems found in a full review of 0.5.0.
         </p>
 
         <h2>Highlights</h2>
         <ul>
-          <li>Drag archives onto the home screen to extract them.</li>
-          <li>Drag files and folders onto the home screen to start a new archive.</li>
-          <li>Drag files and folders into an open, editable ZIP or 7z archive to add them.</li>
-          <li>Drag a regular file from an archive directly into Finder to extract a copy there.</li>
-          <li>Filter archive entries by filename or file type and sort the Type column.</li>
-          <li>Keep large listings bounded: filtering, sorting, and paging run in Rust before results cross into the WebView.</li>
-          <li>Browse with native file icons and a lazily loaded folder sidebar.</li>
-          <li>Open, browse, test, and safely extract supported archives without extracting them first.</li>
-          <li>Create ZIP and 7z archives from files, folders, mixed selections, and empty folders.</li>
-          <li>Create TAR.GZ, TAR.XZ, and TAR.ZST archives plus GZIP, XZ, and Zstandard single-file streams.</li>
-          <li>Create encrypted ZIP and 7z archives; 7z supports encrypted file names.</li>
-          <li>Extract all entries or only selected files and folders.</li>
-          <li>Safely add, delete, and rename entries in single-volume ZIP and 7z archives.</li>
-          <li>Create and extract ZIP and 7z multi-volume sets.</li>
-          <li>Read and edit UTF-8 ZIP comments.</li>
-          <li>Resolve extraction conflicts with Ask, Replace, Skip, or Keep Both.</li>
-          <li>Show progress, current entry, elapsed time, speed, warnings, and cancellation state.</li>
-          <li>Open the completed extraction destination in Finder.</li>
-          <li>Open a safe archived file in its default Mac app, or press Spacebar for native Quick Look.</li>
-          <li>Open archives through file associations and use five Finder Services: Extract Here, Extract to Folder, Test Archive, Compress to ZIP, and Compress with Options.</li>
-          <li>Keep up to ten recent archive paths locally, available only through File → Open Recent and with controls to disable or clear history.</li>
+          <li>Open compressed tarballs (.tar.gz, .tar.bz2, .tar.xz, .tar.zst) straight to their contents, and extract, preview, or drag files from them.</li>
+          <li>Extract archives that contain links: symbolic links are left out and counted, and hard links are extracted as copies of the file they name.</li>
+          <li>Add files into the folder you are viewing inside a ZIP or 7z archive, and replace an existing file after confirming.</li>
+          <li>Enter an archive&#x27;s password once; Archi remembers it in memory until the archive is closed.</li>
+          <li>Cancel a slow open, with a progress shelf that appears only when opening takes a while.</li>
+          <li>Drop an archive on the window to open it. Dropping several asks before extracting them next to the originals.</li>
+          <li>Drag large files and scripts out to Finder; drag-out now follows extraction rules instead of preview rules.</li>
+          <li>Scroll through a folder instead of paging, with Command-A selecting every item in it.</li>
+          <li>Use a standard menu bar: About and Settings in the application menu, a new Archive menu, an Open Recent submenu, and items that disable when they do not apply.</li>
+          <li>See recent archives on the welcome screen.</li>
         </ul>
 
-        <h2>Safety and privacy</h2>
+        <h2>Finder and desktop</h2>
         <ul>
-          <li>Extraction is staged and validated before files are committed to the selected destination.</li>
-          <li>Traversal paths, absolute paths, archive links, unsafe collisions, and source replacement are blocked.</li>
-          <li>Passwords are sent to the bundled engine through standard input, never process arguments or logs.</li>
-          <li>Archive contents, names, passwords, and usage data are not uploaded.</li>
-          <li>The application uses a restrictive Content Security Policy and narrow Tauri permissions.</li>
-          <li>Quarantine propagation remains strict except when the destination filesystem explicitly reports that extended attributes are unsupported.</li>
-          <li>The public <a href="./security.html">security design</a> documents Archi's threat model, extraction pipeline, implemented controls, and limits.</li>
+          <li>Finder&#x27;s Extract Here, Extract to Folder, Test, and Compress to ZIP no longer replace the archive you are browsing.</li>
+          <li>Extracting from Finder puts an archive with several top-level items into a new folder named after it.</li>
+          <li>A Finder selection of several archives continues past a password prompt or a damaged archive and ends with a summary.</li>
+          <li>A Finder request Archi cannot handle is shown instead of being dropped, and selections of up to 1,000 items are accepted.</li>
+          <li>Quitting or closing the window while an operation runs asks first.</li>
+        </ul>
+
+        <h2>Fixes</h2>
+        <ul>
+          <li>Passwords that happen to appear in the archive&#x27;s name or path are accepted.</li>
+          <li>File names such as aux.c, con.txt, or a name ending in a dot no longer block an archive on macOS.</li>
+          <li>Extraction and archive creation work on exFAT and FAT drives.</li>
+          <li>Extraction and creation stage on the destination&#x27;s volume and move finished files into place instead of writing them twice.</li>
+          <li>Keyboard shortcuts no longer start a second operation while one is running, and Command-A and Command-C work normally in the filter field.</li>
+          <li>New Archive replaces an existing file once the save panel has confirmed it, and can replace an existing split-volume set after asking.</li>
+          <li>Large selections are prepared quickly before extraction or deletion.</li>
+          <li>Cancelling an archive edit no longer leaves a hidden temporary copy beside the archive.</li>
+          <li>A deleted or unmounted default extraction folder no longer prevents settings from loading.</li>
+        </ul>
+
+        <h2>Interface</h2>
+        <ul>
+          <li>Errors in New Archive and Settings appear inside the dialog.</li>
+          <li>Right-clicking a selected row keeps the selection and acts on all of it.</li>
+          <li>Error, change, and progress banners sit beneath the toolbar; error titles are plain language.</li>
+          <li>Dates are shown in your locale, sizes use the same units as Finder, and long names no longer push columns out of view.</li>
+          <li>The sidebar follows navigation, and the context menu can be opened and used from the keyboard.</li>
+          <li>Encrypted entries show a lock beside the name in place of the Encrypted column.</li>
+        </ul>
+
+        <h2>Behaviour that changed</h2>
+        <ul>
+          <li>Dropping a single archive opens it; in 0.5.0 it was extracted beside the original.</li>
+          <li>The password for the open archive is kept in memory until it is closed; in 0.5.0 it was kept for one operation only. See Privacy.</li>
+          <li>Copies made for Open, Quick Look, and drag-out are removed when Archi quits and at launch, instead of after about 24 hours.</li>
+          <li>File &gt; Open Recent is a submenu; the Open Recent dialog is gone.</li>
+        </ul>
+
+        <h2>Security and privacy</h2>
+        <ul>
+          <li>The <a href="./security.html">security design</a> is rewritten for this release, including link handling, staging on the destination volume, the exFAT rename fallback, password handling, and drag-out rules.</li>
+          <li><a href="./privacy.html">Privacy</a> now describes the in-memory password, preview copy cleanup, and the hidden staging folder used on other volumes.</li>
+          <li>On exFAT and FAT volumes a file cannot be installed atomically without replacement; Archi checks that the name is free and then renames.</li>
         </ul>
 
         <h2>Distribution</h2>
         <ul>
-          <li>Product: Archi 0.5.0</li>
+          <li>Product: Archi 0.6.0</li>
           <li>Bundle identifier: <code>com.nitivar.archi</code></li>
           <li>Minimum system: macOS 13</li>
           <li>Build architecture: universal Apple Silicon and Intel</li>
           <li>Archive engine: official 7-Zip 26.02 universal macOS binary</li>
-          <li>Packaging: Developer-ID-signed, notarized, and stapled DMG with hardened runtime</li>
         </ul>
 
         <p>
@@ -104,22 +126,9 @@
           <a href="https://github.com/gg333/archi/blob/main/THIRD_PARTY_NOTICES.md">third-party notices</a>.
         </p>
 
-        <h2>Verification completed</h2>
-        <ul>
-          <li>Final artifact: <code>Archi_0.5.0_universal.dmg</code></li>
-          <li>SHA-256: <code>07fc1740912019b6392f89ac707cff33be93b3057e3397ed65cbb0bf957c1077</code></li>
-          <li>Apple accepted app submission <code>de6eb095-b6b7-4f8d-bb7b-1d9754c7b79d</code> and DMG submission <code>c0c13dd2-a5ed-4183-be29-4384ff4f80da</code>.</li>
-          <li>TypeScript/Vite production build</li>
-          <li>Rust formatting and strict Clippy</li>
-          <li>Complete Rust unit, engine-contract, and security test suites</li>
-          <li>100,000-entry listing gate</li>
-          <li>1,000-operation real-engine stress gate</li>
-          <li>Developer ID signing, Apple notarization, and stapling of the universal DMG</li>
-        </ul>
-
+        <h2>Verification</h2>
         <p>
-          Clean-machine installation, upgrade, Finder lifecycle, and uninstall checks remain
-          part of the manual release checklist and are not claimed by this automated verification summary.
+          To be completed when the release is built: final artifact name and SHA-256, Apple notarization submission IDs, and the manual checks in the release checklist. Nothing in this section is claimed yet.
         </p>
       </article>
     </div>
