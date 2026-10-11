@@ -6,8 +6,8 @@ Security fixes are provided for the latest Archi release only.
 
 | Version | Supported |
 | --- | --- |
-| 0.5.x | Yes |
-| 0.4.x and earlier | No |
+| 0.6.x | Yes |
+| 0.5.x and earlier | No |
 
 The public [security design](docs/SECURITY_DESIGN.md) describes Archi's threat
 model, extraction pipeline, implemented controls, and explicit limitations.

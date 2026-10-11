@@ -11,7 +11,7 @@
 <p align="center">
   <a href="https://gg333.github.io/archi/"><strong>Website</strong></a>
   ·
-  <a href="https://github.com/gg333/archi/releases/tag/v0.5.0"><strong>Download Archi 0.5.0</strong></a>
+  <a href="https://github.com/gg333/archi/releases/tag/v0.6.0"><strong>Download Archi 0.6.0</strong></a>
 </p>
 
 <p align="center">
@@ -49,8 +49,8 @@ Windows and Linux builds are not available yet.
 
 ## Install
 
-1. Download `Archi_0.5.0_universal.dmg` from the
-   [v0.5.0 release](https://github.com/gg333/archi/releases/tag/v0.5.0).
+1. Download `Archi_0.6.0_universal.dmg` from the
+   [v0.6.0 release](https://github.com/gg333/archi/releases/tag/v0.6.0).
 2. Open the DMG and drag **Archi** into **Applications**.
 3. Open Archi from Applications.
 
