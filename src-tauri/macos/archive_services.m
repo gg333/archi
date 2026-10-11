@@ -1,10 +1,13 @@
 #import <AppKit/AppKit.h>
 #import <QuickLookUI/QuickLookUI.h>
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
+#import <objc/runtime.h>
+#include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
 
 extern void archive_app_receive_service_paths(const char *action, const char *paths_json);
+extern bool archive_app_should_terminate(void);
 
 @interface ArchiveAppServiceProvider : NSObject
 - (void)archiveExtractHere:(NSPasteboard *)pasteboard userData:(NSString *)userData error:(NSString **)error;
@@ -90,6 +93,27 @@ void archive_app_register_services(void) {
   provider = [[ArchiveAppServiceProvider alloc] init];
   NSApp.servicesProvider = provider;
   NSUpdateDynamicServices();
+}
+
+static NSApplicationTerminateReply archive_app_terminate_reply(__unused id self, __unused SEL _cmd,
+                                                                __unused NSApplication *sender) {
+  return archive_app_should_terminate() ? NSTerminateNow : NSTerminateCancel;
+}
+
+// The application delegate belongs to the windowing library and does not implement
+// applicationShouldTerminate:, so Cmd+Q, the Dock's Quit, and logout would end a running
+// job without asking. Add the method to that delegate.
+void archive_app_install_quit_guard(void) {
+  id delegate = NSApp.delegate;
+  if (delegate == nil) {
+    return;
+  }
+  if (class_addMethod([delegate class], @selector(applicationShouldTerminate:),
+                      (IMP)archive_app_terminate_reply, "Q@:@")) {
+    // AppKit records which delegate methods exist when the delegate is assigned.
+    NSApp.delegate = nil;
+    NSApp.delegate = delegate;
+  }
 }
 
 void archive_app_quick_look(const char *path) {

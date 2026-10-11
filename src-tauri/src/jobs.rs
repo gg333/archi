@@ -1,5 +1,6 @@
 use crate::archive::{
-    self, ArchiveError, ArchiveFormat, CompressionLevel, CreationPlan, DeletionPlan, RenamePlan,
+    self, ArchiveError, ArchiveFormat, ArchiveLayout, ArchiveListing, CompressionLevel,
+    CreationPlan, DeletionPlan, ExtractionPlan, RenamePlan,
 };
 use crate::safe_paths;
 use serde::Serialize;
@@ -83,6 +84,8 @@ struct Progress {
     total_bytes: u64,
     current_entry: Option<String>,
     warning_count: usize,
+    // Set while the engine prints an archive listing, which is not progress output.
+    quiet: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -159,6 +162,10 @@ impl JobManager {
         }
     }
 
+    pub(crate) fn is_active(&self) -> bool {
+        self.current.lock().is_ok_and(|current| current.is_some())
+    }
+
     pub(crate) fn status(&self) -> Result<Option<JobSnapshot>, ArchiveError> {
         self.current
             .lock()
@@ -200,6 +207,19 @@ impl JobControl {
         if let Ok(mut progress) = self.progress.lock() {
             progress.percent = 0;
             progress.current_entry = None;
+            progress.quiet = false;
+        }
+    }
+
+    /// Advances the bar from bytes actually written, for engines that print no percentage.
+    fn observe_processed(&self, processed: u64) {
+        if let Ok(mut progress) = self.progress.lock() {
+            let percent = processed
+                .saturating_mul(100)
+                .checked_div(progress.total_bytes)
+                .unwrap_or(0)
+                .min(99) as u8;
+            progress.percent = progress.percent.max(percent);
         }
     }
 
@@ -269,6 +289,9 @@ impl JobControl {
         }
         let chunk = String::from_utf8_lossy(&bytes);
         let mut progress = self.progress.lock().map_err(lock_error)?;
+        if progress.quiet {
+            return Ok(());
+        }
         if let Some(percent) = parse_percent(&chunk) {
             progress.percent = progress.percent.max(percent);
         }
@@ -329,7 +352,7 @@ pub(crate) fn run_extract(
     binary: &Path,
     archive_path: &Path,
     staging: &Path,
-    entries: &[String],
+    plan: &ExtractionPlan,
     password: Option<&str>,
     max_bytes: Option<u64>,
 ) -> Result<JobOutcome, ArchiveError> {
@@ -338,7 +361,7 @@ pub(crate) fn run_extract(
         control,
         || {
             if last_check.elapsed() >= Duration::from_millis(200) {
-                safe_paths::enforce_staging_limits(staging, max_bytes)?;
+                control.observe_processed(safe_paths::enforce_staging_limits(staging, max_bytes)?);
                 last_check = Instant::now();
             }
             Ok(())
@@ -348,7 +371,7 @@ pub(crate) fn run_extract(
                 binary,
                 archive_path,
                 staging,
-                entries,
+                plan,
                 password,
                 stdout,
                 stderr,
@@ -491,12 +514,85 @@ pub(crate) fn run_rename(
     )
 }
 
+/// Lists an archive as a cancellable stage of `control`'s job, looking inside compressed
+/// tarballs the same way `archive::inspect_archive` does.
+pub(crate) fn run_inspect(
+    control: &Arc<JobControl>,
+    binary: &Path,
+    archive_path: &Path,
+    password: Option<&str>,
+) -> Result<ArchiveListing, ArchiveError> {
+    let (status, stdout, stderr) = run_captured(
+        control,
+        true,
+        || Ok(()),
+        |stdout, stderr| archive::spawn_list(binary, archive_path, password, stdout, stderr),
+    )?;
+    if !status.success() {
+        return Err(archive::engine_failure(&status, &stdout, &stderr));
+    }
+    let entries = archive::parse_list(&stdout, archive_path)?;
+    if archive::may_hold_tar(archive_path, &entries) {
+        let mut decoder = None;
+        let listed = run_captured(
+            control,
+            true,
+            || Ok(()),
+            |stdout, stderr| {
+                let (lister, stream) =
+                    archive::spawn_tar_list(binary, archive_path, stdout, stderr)?;
+                decoder = Some(stream);
+                Ok(lister)
+            },
+        );
+        match (listed, decoder) {
+            (Ok((status, stdout, _)), Some(decoder)) => {
+                if let Some(entries) = decoder.finish(status.success(), &stdout)? {
+                    return Ok(ArchiveListing {
+                        entries,
+                        layout: ArchiveLayout::CompressedTar,
+                    });
+                }
+            }
+            (Err(error), decoder) => {
+                if let Some(decoder) = decoder {
+                    decoder.abandon();
+                }
+                return Err(error);
+            }
+            (Ok(_), None) => {}
+        }
+    }
+    Ok(ArchiveListing {
+        entries,
+        layout: ArchiveLayout::Plain,
+    })
+}
+
 fn run_worker(
     control: &Arc<JobControl>,
     monitor: impl FnMut() -> Result<(), ArchiveError>,
     spawn: impl FnOnce(Stdio, Stdio) -> Result<Child, ArchiveError>,
 ) -> Result<JobOutcome, ArchiveError> {
+    let (status, stdout, stderr) = run_captured(control, false, monitor, spawn)?;
+    if status.success() {
+        control.complete_output(&stdout, &stderr)
+    } else {
+        Err(archive::engine_failure(&status, &stdout, &stderr))
+    }
+}
+
+/// Runs one engine process as a cancellable stage and returns its exit status and output.
+fn run_captured(
+    control: &Arc<JobControl>,
+    quiet: bool,
+    monitor: impl FnMut() -> Result<(), ArchiveError>,
+    spawn: impl FnOnce(Stdio, Stdio) -> Result<Child, ArchiveError>,
+) -> Result<(ExitStatus, String, String), ArchiveError> {
     control.prepare_stage();
+    if quiet {
+        control.progress.lock().map_err(lock_error)?.quiet = true;
+    }
     if control.cancelled() {
         return Err(cancelled_error());
     }
@@ -512,10 +608,8 @@ fn run_worker(
     let stderr = read_log(stderr.as_file_mut())?;
     if control.cancelled() {
         Err(cancelled_error())
-    } else if status.success() {
-        control.complete_output(&stdout, &stderr)
     } else {
-        Err(archive::engine_failure(&status, &stdout, &stderr))
+        Ok((status, stdout, stderr))
     }
 }
 

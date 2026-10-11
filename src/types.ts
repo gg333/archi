@@ -8,6 +8,8 @@ export interface ArchiveEntry {
   method: string | null;
   isLink: boolean;
   linkTarget: string | null;
+  /** A second name for another file in the archive; extracted as an ordinary file. */
+  hardLink: boolean;
 }
 
 export interface ArchiveDocument {
@@ -46,6 +48,7 @@ export interface ExtractResult {
   filesExtracted: number;
   filesSkipped: number;
   renamed: number;
+  linksSkipped: number;
   elapsedMs: number;
   warningCount: number;
 }
@@ -88,7 +91,7 @@ export interface TestResult {
 
 export interface JobSnapshot {
   id: number;
-  operation: "create" | "extract" | "test" | "modify";
+  operation: "open" | "create" | "extract" | "test" | "modify";
   phase: "preparing" | "running" | "finishing" | "cancelling" | "done";
   percent: number;
   processedBytes: number;

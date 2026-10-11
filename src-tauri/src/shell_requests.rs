@@ -14,7 +14,8 @@ use std::{
 use tauri::{AppHandle, Manager};
 
 const REQUEST_VERSION: u8 = 1;
-const MAX_REQUEST_BYTES: u64 = 64 * 1024;
+// Room for the largest allowed selection of long paths.
+const MAX_REQUEST_BYTES: u64 = 4 * 1024 * 1024;
 const MAX_REQUEST_AGE_SECONDS: u64 = 60;
 const MAX_PATHS: usize = 1_000;
 
@@ -65,6 +66,8 @@ pub(crate) struct ShellRequestStore(Arc<ShellRequestStoreInner>);
 struct ShellRequestStoreInner {
     directory: PathBuf,
     queue: Mutex<VecDeque<ShellRequest>>,
+    // Requests Archi refused, waiting to be shown to the user.
+    rejections: Mutex<Vec<String>>,
     io_lock: Mutex<()>,
     provider_registered: AtomicBool,
 }
@@ -85,6 +88,7 @@ impl ShellRequestStore {
         let store = Self(Arc::new(ShellRequestStoreInner {
             directory,
             queue: Mutex::new(VecDeque::new()),
+            rejections: Mutex::new(Vec::new()),
             io_lock: Mutex::new(()),
             provider_registered: AtomicBool::new(false),
         }));
@@ -104,7 +108,9 @@ impl ShellRequestStore {
         let path = self.0.directory.join(format!("{}.json", request.nonce));
         let bytes = serde_json::to_vec(&request).map_err(shell_error)?;
         if bytes.len() as u64 > MAX_REQUEST_BYTES {
-            return Err(invalid_request("Shell request is too large"));
+            return Err(invalid_request(
+                "The selection is too large to pass to Archi",
+            ));
         }
         let mut file = create_private_file(&path)?;
         file.write_all(&bytes).map_err(shell_error)?;
@@ -124,6 +130,22 @@ impl ShellRequestStore {
             .pop_front()
             .into_iter()
             .collect())
+    }
+
+    pub(crate) fn reject(&self, reason: &str) {
+        if let Ok(mut rejections) = self.0.rejections.lock() {
+            rejections.push(format!(
+                "Archi could not handle the Finder request. {reason}"
+            ));
+        }
+    }
+
+    pub(crate) fn take_rejections(&self) -> Vec<String> {
+        self.0
+            .rejections
+            .lock()
+            .map(|mut rejections| std::mem::take(&mut *rejections))
+            .unwrap_or_default()
     }
 
     pub(crate) fn set_provider_registered(&self, registered: bool) {
@@ -199,10 +221,11 @@ fn validate_request(request: &ShellRequest) -> Result<(), ArchiveError> {
     if request.version != REQUEST_VERSION {
         return Err(invalid_request("Unsupported shell request version"));
     }
-    if request.paths.is_empty() || request.paths.len() > MAX_PATHS {
-        return Err(invalid_request(
-            "Shell request has an invalid selection size",
-        ));
+    if request.paths.is_empty() {
+        return Err(invalid_request("No items were selected"));
+    }
+    if request.paths.len() > MAX_PATHS {
+        return Err(invalid_request("Select at most 1,000 items at a time"));
     }
     if request.nonce.len() != 32 || !request.nonce.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         return Err(invalid_request("Shell request nonce is invalid"));
@@ -345,6 +368,32 @@ mod tests {
             .unwrap()
             .next()
             .is_none());
+    }
+
+    #[test]
+    fn large_selections_fit_and_refusals_are_kept_for_the_user() {
+        let root = tempfile::tempdir().unwrap();
+        let store = ShellRequestStore::in_directory(root.path().join("requests")).unwrap();
+        let deep = root.path().join("a".repeat(200)).join("b".repeat(200));
+        fs::create_dir_all(&deep).unwrap();
+        let selected = (0..MAX_PATHS)
+            .map(|index| {
+                let path = deep.join(format!("item-{index:04}.txt"));
+                fs::write(&path, "x").unwrap();
+                path.to_string_lossy().into_owned()
+            })
+            .collect::<Vec<_>>();
+        store.submit("compress_zip", selected.clone()).unwrap();
+        assert_eq!(store.take().unwrap()[0].paths.len(), MAX_PATHS);
+
+        let mut too_many = selected;
+        too_many.push(too_many[0].clone());
+        let error = store.submit("compress_zip", too_many).unwrap_err();
+        store.reject(&error.message);
+        let shown = store.take_rejections();
+        assert_eq!(shown.len(), 1);
+        assert!(shown[0].contains("at most 1,000 items"), "{}", shown[0]);
+        assert!(store.take_rejections().is_empty());
     }
 
     #[test]

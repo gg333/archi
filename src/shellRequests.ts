@@ -1,6 +1,6 @@
 import type { ShellRequest } from "./types";
 
-export type FileDropAction = "ignore" | "add" | "extract" | "create";
+export type FileDropAction = "ignore" | "add" | "open" | "extract" | "ask" | "create";
 
 export function fileDropAction(
   paths: string[],
@@ -10,8 +10,12 @@ export function fileDropAction(
 ): FileDropAction {
   if (!paths.length) return "ignore";
   if (creating) return "create";
-  if (archiveCanModify) return "add";
-  return paths.every(isArchive) ? "extract" : "create";
+  if (paths.every(isArchive)) {
+    // An archive dropped on an editable archive could mean either; the user decides.
+    if (archiveCanModify) return "ask";
+    return paths.length === 1 ? "open" : "extract";
+  }
+  return archiveCanModify ? "add" : "create";
 }
 
 export async function drainShellRequests(

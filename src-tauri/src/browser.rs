@@ -95,6 +95,19 @@ impl ArchiveStore {
         Ok(document)
     }
 
+    /// Summarises an archive without making it the one being browsed.
+    pub(crate) fn describe(
+        path: &str,
+        engine_version: &str,
+        entries: &[ArchiveEntry],
+    ) -> ArchiveDocument {
+        let name = Path::new(path)
+            .file_name()
+            .map(|value| value.to_string_lossy().into_owned())
+            .unwrap_or_else(|| path.to_string());
+        summary(path, &name, engine_version, entries)
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn page(
         &self,
@@ -124,6 +137,23 @@ impl ArchiveStore {
             page_size,
             show_hidden,
         ))
+    }
+
+    /// Every entry path in a view, across all of its pages.
+    pub(crate) fn paths(
+        &self,
+        path: &str,
+        folder: &str,
+        query: &str,
+        file_type: &str,
+        show_hidden: bool,
+    ) -> Result<Vec<String>, ArchiveError> {
+        validate_folder(folder)?;
+        let entries = {
+            let guard = self.0.lock().map_err(lock_error)?;
+            Arc::clone(&current(&guard, path)?.entries)
+        };
+        Ok(view_paths(&entries, folder, query, file_type, show_hidden))
     }
 
     pub(crate) fn folders(
@@ -239,17 +269,7 @@ fn build_page(
     requested_page_size: usize,
     show_hidden: bool,
 ) -> EntryPage {
-    let query = query.trim().to_lowercase();
-    let mut visible = if query.is_empty() {
-        folder_entries(entries, folder, show_hidden)
-    } else {
-        entries
-            .iter()
-            .filter(|entry| show_hidden || !is_hidden(&entry.path))
-            .filter(|entry| leaf_name(&entry.path).to_lowercase().contains(&query))
-            .cloned()
-            .collect()
-    };
+    let mut visible = view_entries(entries, folder, query, show_hidden);
     let file_types = visible
         .iter()
         .map(file_type_key)
@@ -277,6 +297,40 @@ fn build_page(
         total,
         total_pages,
     }
+}
+
+fn view_entries(
+    entries: &[ArchiveEntry],
+    folder: &str,
+    query: &str,
+    show_hidden: bool,
+) -> Vec<ArchiveEntry> {
+    let query = query.trim().to_lowercase();
+    if query.is_empty() {
+        folder_entries(entries, folder, show_hidden)
+    } else {
+        entries
+            .iter()
+            .filter(|entry| show_hidden || !is_hidden(&entry.path))
+            .filter(|entry| leaf_name(&entry.path).to_lowercase().contains(&query))
+            .cloned()
+            .collect()
+    }
+}
+
+fn view_paths(
+    entries: &[ArchiveEntry],
+    folder: &str,
+    query: &str,
+    file_type: &str,
+    show_hidden: bool,
+) -> Vec<String> {
+    let file_type = file_type.trim().to_lowercase();
+    view_entries(entries, folder, query, show_hidden)
+        .into_iter()
+        .filter(|entry| file_type.is_empty() || file_type_key(entry) == file_type)
+        .map(|entry| entry.path)
+        .collect()
 }
 
 fn folder_entries(entries: &[ArchiveEntry], folder: &str, show_hidden: bool) -> Vec<ArchiveEntry> {
@@ -310,6 +364,7 @@ fn folder_entries(entries: &[ArchiveEntry], folder: &str, show_hidden: bool) -> 
                     method: None,
                     is_link: false,
                     link_target: None,
+                    hard_link: false,
                 });
             child.size = add_optional(child.size, entry.size);
             child.packed_size = add_optional(child.packed_size, entry.packed_size);
@@ -390,7 +445,7 @@ fn compare_entries(
 }
 
 fn file_type_key(entry: &ArchiveEntry) -> String {
-    if entry.is_link {
+    if entry.is_link && !entry.hard_link {
         return "__link__".to_string();
     }
     if entry.is_directory {
@@ -480,6 +535,7 @@ mod tests {
             method: None,
             is_link: false,
             link_target: None,
+            hard_link: false,
         }
     }
 
@@ -541,7 +597,8 @@ mod tests {
                     "encrypted": false,
                     "method": null,
                     "isLink": false,
-                    "linkTarget": null
+                    "linkTarget": null,
+                    "hardLink": false
                 }],
                 "fileTypes": ["txt"],
                 "page": 1,
@@ -618,6 +675,12 @@ mod tests {
         entries.extend(
             (0..100_000).map(|index| entry(format!("bulk/file-{index:06}.txt"), false, index)),
         );
+        assert_eq!(view_paths(&entries, "bulk", "", "", false).len(), 100_000);
+        assert_eq!(
+            view_paths(&entries, "", "second", "txt", false),
+            ["folder/nested/second.txt"]
+        );
+        assert_eq!(view_paths(&entries, "", "", "", false), ["bulk", "folder"]);
         let root = build_page(&entries, "", "", "", SortKey::Name, false, 1, 200, false);
         assert_eq!(
             root.entries

@@ -28,6 +28,7 @@ export function extractArchive(
   password?: string,
   maxExpandedBytes = 10 * 1024 ** 3,
   allowUnbounded = false,
+  enclose = false,
 ): Promise<ExtractResult> {
   return invoke("start_extract", {
     path,
@@ -37,6 +38,7 @@ export function extractArchive(
     password,
     maxExpandedBytes,
     allowUnbounded,
+    enclose,
   });
 }
 
@@ -61,6 +63,9 @@ export function createArchive(
   password?: string,
   passwordConfirmation?: string,
   volumeSize?: number,
+  replaceExisting = false,
+  openResult = true,
+  replaceVolumes = false,
 ): Promise<ArchiveDocument> {
   return invoke("create_archive", {
     inputs,
@@ -70,6 +75,9 @@ export function createArchive(
     volumeSize,
     password,
     passwordConfirmation,
+    replaceExisting,
+    openResult,
+    replaceVolumes,
   });
 }
 
@@ -77,9 +85,11 @@ export function addToArchive(
   path: string,
   inputs: string[],
   compression: CompressionLevel,
-  password?: string,
+  password: string | undefined,
+  folder: string,
+  replaceExisting: boolean,
 ): Promise<ArchiveDocument> {
-  return invoke("add_to_archive", { path, inputs, compression, password });
+  return invoke("add_to_archive", { path, inputs, compression, password, folder, replaceExisting });
 }
 
 export function deleteArchiveEntries(
@@ -139,6 +149,16 @@ export function entryPage(
   });
 }
 
+export function entryPaths(
+  path: string,
+  folder: string,
+  query: string,
+  fileType: string,
+  showHidden: boolean,
+): Promise<string[]> {
+  return invoke("view_entry_paths", { path, folder, query, fileType, showHidden });
+}
+
 export function archiveFolders(path: string, folder: string, showHidden: boolean): Promise<ArchiveFolder[]> {
   return invoke("archive_folders", { path, folder, showHidden });
 }
@@ -191,8 +211,20 @@ export function cancelJob(): Promise<boolean> {
   return invoke("cancel_job");
 }
 
+export function setMenuEnabled(items: Record<string, boolean>): Promise<void> {
+  return invoke("set_menu_enabled", { items });
+}
+
+export function setRecentMenu(paths: string[]): Promise<void> {
+  return invoke("set_recent_menu", { paths });
+}
+
 export function takeShellRequests(): Promise<ShellRequest[]> {
   return invoke("take_shell_requests");
+}
+
+export function takeShellRejections(): Promise<string[]> {
+  return invoke("take_shell_rejections");
 }
 
 export function shellIntegrationStatus(): Promise<ShellIntegrationStatus> {

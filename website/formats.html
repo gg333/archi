@@ -92,9 +92,10 @@
         <ul>
           <li>RAR is read-only. Archi does not create or modify RAR archives.</li>
           <li>GZIP, XZ, and Zstandard streams accept exactly one regular file. Use a TAR format for folders or multiple items.</li>
-          <li>Modification is available only for single-volume ZIP and 7z archives.</li>
+          <li>Modification is available only for single-volume ZIP and 7z archives. Items are added to the folder you are viewing, and replacing an existing file asks first.</li>
           <li>ZIP comments are supported; 7z and multi-volume comments are not exposed.</li>
-          <li>Compound archives and single compressed streams may initially appear as one logical inner file, such as <code>archive.tar</code>. Extract that file and open it separately.</li>
+          <li>Compressed tarballs (<code>.tar.gz</code>, <code>.tgz</code>, <code>.tar.bz2</code>, <code>.tbz2</code>, <code>.tar.xz</code>, <code>.txz</code>, <code>.tar.zst</code>, <code>.tzst</code>) open directly to their contents. Other compound archives, and compressed streams that do not hold a TAR, appear as one inner file.</li>
+          <li>Symbolic links are never recreated: they are left out of an extraction and counted in the result. A hard link is extracted as its own copy of the file it names.</li>
           <li>Content detection uses signature and engine probing; an incorrect extension can produce a non-blocking format warning.</li>
           <li>Unsupported compression or encryption methods may prevent an otherwise recognized archive from opening.</li>
           <li>Encrypted ZIP creation uses AES-256, which some older ZIP utilities cannot read.</li>

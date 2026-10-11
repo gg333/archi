@@ -28,7 +28,7 @@ bundled 7-Zip 26.02 engine for archive operations.
 - Navigate large archives with a hideable, lazily loaded folder sidebar.
 - Open a safe archived file in its normal Mac application, or press Spacebar for Quick Look.
 - Drag a regular file from an archive directly into Finder to extract a copy there.
-- Drop archives to extract them, files and folders to create an archive, or items into an open ZIP or 7z archive to add them.
+- Drop an archive to open it, several archives to extract them, files and folders to create an archive, or items into an open ZIP or 7z archive to add them to the folder you are viewing.
 - Extract an entire archive or selected files and folders.
 - Create ZIP, 7z, TAR.GZ, TAR.XZ, TAR.ZST, GZIP, XZ, and Zstandard files.
 - Encrypt ZIP and 7z archives with AES-256.

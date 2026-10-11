@@ -76,6 +76,10 @@ impl Settings {
     pub(crate) fn preview_limit(&self) -> u64 {
         self.max_preview_bytes.min(self.max_expanded_bytes)
     }
+
+    pub(crate) fn extraction_limit(&self) -> u64 {
+        self.max_expanded_bytes
+    }
 }
 
 const fn default_expanded_bytes() -> u64 {
@@ -149,7 +153,7 @@ impl LocalData {
         if !path.exists() {
             return Ok(Settings::default());
         }
-        let settings: Settings =
+        let mut settings: Settings =
             serde_json::from_reader(fs::File::open(&path).map_err(|error| {
                 ArchiveError::new(
                     "settings_unavailable",
@@ -162,6 +166,17 @@ impl LocalData {
                     format!("Settings are not valid JSON: {error}"),
                 )
             })?;
+        // A custom folder that was since deleted or unmounted must not make every launch
+        // fail; fall back to asking where to extract.
+        let custom_missing = settings.extraction_destination == ExtractionDestination::Custom
+            && !settings
+                .custom_destination
+                .as_deref()
+                .is_some_and(|folder| Path::new(folder).is_dir());
+        if custom_missing {
+            settings.extraction_destination = ExtractionDestination::Ask;
+            settings.custom_destination = None;
+        }
         validate(&settings)?;
         Ok(settings)
     }
@@ -493,6 +508,19 @@ mod tests {
         assert_eq!(fs::read_to_string(existing).unwrap(), "keep me");
         data.clear_diagnostics().unwrap();
         assert!(!directory.path().join("diagnostics.log").exists());
+    }
+
+    #[test]
+    fn a_missing_custom_extraction_folder_falls_back_to_asking() {
+        let directory = tempfile::tempdir().unwrap();
+        fs::write(
+            directory.path().join("settings.json"),
+            r#"{"version":1,"defaultFormat":"zip","defaultCompression":"normal","extractionDestination":"custom","customDestination":"/Volumes/Unplugged Drive/Extracted","revealOnCompletion":true,"notifications":false,"showHiddenEntries":false,"maxConcurrentJobs":1}"#,
+        )
+        .unwrap();
+        let settings = data(directory.path().to_path_buf()).load().unwrap();
+        assert_eq!(settings.extraction_destination, ExtractionDestination::Ask);
+        assert_eq!(settings.custom_destination, None);
     }
 
     #[test]

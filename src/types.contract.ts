@@ -10,6 +10,7 @@ export const archiveEntryContract = {
   method: null,
   isLink: false,
   linkTarget: null,
+  hardLink: false,
 } satisfies ArchiveEntry;
 
 export const archiveDocumentContract = {

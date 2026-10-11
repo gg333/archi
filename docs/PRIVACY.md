@@ -31,15 +31,15 @@ Diagnostics contain only a timestamp, Archi version, operating system, architect
 
 ## Temporary files and Finder requests
 
-Archi uses private temporary staging directories during archive operations so output can be validated before it is installed. Job-owned temporary data is removed after success, failure, or cancellation, and stale Archi-owned staging directories are cleaned on startup.
+Archi uses private staging directories during archive operations so output can be validated before it is installed. When the destination is on another volume than the system temporary folder, staging is a hidden `.archive-app-extract-…` folder beside the destination, so finished files are moved into place rather than written twice. Job-owned temporary data is removed after success, failure, or cancellation, and anything a crashed job left behind is cleaned on startup.
 
-Opening, previewing, or dragging an archived file into Finder extracts only that safe, regular file to `~/Library/Caches/com.nitivar.archi/Previews/` inside a random, owner-only directory. The default size limit is 100 MiB and can be configured up to 1 GiB. The copy is read-only with respect to the archive, and stale preview directories are removed on startup after about 24 hours.
+Opening, previewing, or dragging an archived file into Finder extracts only that regular file to `~/Library/Caches/com.nitivar.archi/Previews/` inside a random, owner-only directory. The default size limit is 100 MiB and can be configured up to 1 GiB. The copy is read-only with respect to the archive, and these copies are removed when Archi quits and again at the next launch. Dragged-out files keep their archived permissions rather than being read-only.
 
-Finder Services pass selections through private, owner-only request files. Requests are validated, consumed once, and deleted before the action is dispatched.
+Finder Services pass selections through private, owner-only request files. Requests are validated, consumed once, and deleted before the action is dispatched. A request Archi cannot handle is shown to you rather than dropped.
 
 ## Passwords
 
-Passwords are retained only for the active operation, are not saved in settings or history, and are not placed in process arguments or diagnostics. Password memory is cleared when the operation completes where the application controls that memory.
+Passwords are never saved in settings or history and are not placed in process arguments or diagnostics. So that you are not asked repeatedly, the password for the archive you have open is kept in memory until you close that archive, open another, or quit Archi. Passwords for archives handled from Finder without being opened are used for that operation only.
 
 ## Notifications and file access
 

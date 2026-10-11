@@ -41,6 +41,7 @@ fn main() {
 
     #[cfg(target_os = "macos")]
     {
+        println!("cargo:rerun-if-changed=macos/archive_services.m");
         cc::Build::new()
             .file("macos/archive_services.m")
             .flag("-fobjc-arc")

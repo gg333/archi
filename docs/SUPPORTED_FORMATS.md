@@ -26,9 +26,10 @@ This matrix describes Archi 0.5.0 on macOS with the bundled 7-Zip 26.02 engine. 
 
 - RAR is read-only. Archi does not create or modify RAR archives.
 - GZIP, XZ, and Zstandard streams accept exactly one regular file. Use a TAR format for folders or multiple items.
-- Modification is available only for single-volume ZIP and 7z archives.
+- Modification is available only for single-volume ZIP and 7z archives. Items are added to the folder you are viewing, and replacing an existing file asks first.
 - ZIP comments are supported; 7z and multi-volume comments are not exposed.
-- Compound archives and single compressed streams may initially appear as one logical inner file, such as `archive.tar`. Extract that file and open it separately.
+- Compressed tarballs (`.tar.gz`, `.tgz`, `.tar.bz2`, `.tbz2`, `.tar.xz`, `.txz`, `.tar.zst`, `.tzst`) open directly to their contents. Other compound archives, and compressed streams that do not hold a TAR, appear as one inner file.
+- Symbolic links are never recreated: they are left out of an extraction and counted in the result. A hard link is extracted as its own copy of the file it names.
 - Content detection uses signature and engine probing; an incorrect extension can produce a non-blocking format warning.
 - Unsupported compression or encryption methods may prevent an otherwise recognized archive from opening.
 - Encrypted ZIP creation uses AES-256, which some older ZIP utilities cannot read.

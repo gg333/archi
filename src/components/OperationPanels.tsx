@@ -3,13 +3,16 @@ import type { ConflictPolicy, JobSnapshot } from "../types";
 import { Modal } from "./Modal";
 
 export function JobShelf({ job, onCancel }: { job: JobSnapshot; onCancel: () => void }) {
+  // Listing an archive reports no percentage, and some extractions have no total to measure against.
+  const indeterminate = job.percent === 0 && (job.operation === "open" || job.totalBytes === 0);
+  const title = job.operation === "open" ? "Opening" : capitalize(job.operation);
   return (
     <section className="job-shelf" aria-label={`${job.operation} progress`}>
-      <div className="job-heading"><strong>{capitalize(job.operation)} · {capitalize(job.phase)}</strong><span>{job.percent}%</span></div>
-      <progress max="100" value={job.percent}>{job.percent}%</progress>
+      <div className="job-heading"><strong>{title} · {capitalize(job.phase)}</strong>{!indeterminate && <span>{job.percent}%</span>}</div>
+      {indeterminate ? <progress aria-label="Working" /> : <progress max="100" value={job.percent}>{job.percent}%</progress>}
       <div className="job-details" aria-live="polite">
-        <span>{job.currentEntry ?? `${formatBytes(job.processedBytes)} of ${formatBytes(job.totalBytes)}`}</span>
-        <span>{formatDuration(job.elapsedMs)} · {formatBytes(job.bytesPerSecond)}/s · {job.warningCount} warnings</span>
+        <span>{job.currentEntry ?? (indeterminate ? "Reading the archive…" : `${formatBytes(job.processedBytes)} of ${formatBytes(job.totalBytes)}`)}</span>
+        <span>{formatDuration(job.elapsedMs)}{indeterminate ? "" : ` · ${formatBytes(job.bytesPerSecond)}/s`}{job.warningCount ? ` · ${job.warningCount} ${job.warningCount === 1 ? "warning" : "warnings"}` : ""}</span>
         {job.cancellable && <button className="cancel-button" onClick={onCancel}>Cancel</button>}
       </div>
     </section>
@@ -94,12 +97,12 @@ function capitalize(value: string) {
 }
 
 function formatBytes(bytes: number) {
-  if (bytes < 1024) return `${bytes.toLocaleString()} B`;
+  if (bytes < 1000) return `${bytes.toLocaleString()} ${bytes === 1 ? "byte" : "bytes"}`;
   const units = ["KB", "MB", "GB", "TB"];
-  let value = bytes / 1024;
+  let value = bytes / 1000;
   let index = 0;
-  while (value >= 1024 && index < units.length - 1) { value /= 1024; index += 1; }
-  return `${value.toFixed(value >= 10 ? 1 : 2)} ${units[index]}`;
+  while (value >= 1000 && index < units.length - 1) { value /= 1000; index += 1; }
+  return `${value.toFixed(value >= 100 || index === 0 ? 0 : value >= 10 ? 1 : 2)} ${units[index]}`;
 }
 
 function formatDuration(milliseconds: number) {

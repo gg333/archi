@@ -26,6 +26,7 @@ fn entry(path: &str, is_directory: bool) -> ArchiveEntry {
         method: None,
         is_link: false,
         link_target: None,
+        hard_link: false,
     }
 }
 
@@ -37,12 +38,31 @@ fn rejects_traversal_absolute_drive_unc_and_reserved_paths() {
         "C:\\Windows\\outside.txt",
         "\\\\server\\share\\outside.txt",
         "folder/../outside.txt",
-        "NUL.txt",
-        "folder/file. ",
         "archive-app-extract-forged/file.txt",
     ] {
         let error = validate_archive_entries(&[entry(path, false)]).unwrap_err();
         assert_eq!(error.code, "unsafe_path", "{path}");
+    }
+}
+
+#[test]
+fn windows_only_name_rules_do_not_block_other_platforms() {
+    for path in [
+        "NUL.txt",
+        "src/aux.c",
+        "con",
+        "COM1.log",
+        "folder/file. ",
+        "docs/v1.",
+        "Meeting 10:30.txt",
+        "a:b.txt",
+    ] {
+        let result = validate_archive_entries(&[entry(path, false)]);
+        if cfg!(windows) {
+            assert_eq!(result.unwrap_err().code, "unsafe_path", "{path}");
+        } else {
+            result.unwrap_or_else(|error| panic!("{path}: {}", error.message));
+        }
     }
 }
 
@@ -66,29 +86,29 @@ fn rejects_case_unicode_and_file_parent_collisions() {
 }
 
 #[test]
-fn rejects_archive_links() {
+fn archive_links_are_ignored_rather_than_blocking_other_entries() {
     let mut link = entry("link.txt", false);
     link.is_link = true;
     link.link_target = Some("../../outside.txt".to_string());
-    assert_eq!(
-        validate_archive_entries(&[link]).unwrap_err().code,
-        "unsafe_link"
-    );
+    validate_archive_entries(&[link.clone(), entry("real.txt", false)]).unwrap();
+    // A link never reaches disk, so a file listed beneath it is an ordinary path.
+    link.path = "folder".to_string();
+    validate_archive_entries(&[link, entry("folder/real.txt", false)]).unwrap();
 }
 
 #[test]
 fn malicious_archive_corpus_is_blocked_before_any_write() {
     let engine = bundled_engine().unwrap();
-    for (name, expected_code) in [
-        ("traversal.tar", "unsafe_path"),
-        ("symlink.tar", "unsafe_link"),
-    ] {
-        let destination = tempfile::tempdir().unwrap();
-        let entries = list_archive(&engine, &fixture(name), None).unwrap();
-        let error = validate_archive_entries(&entries).unwrap_err();
-        assert_eq!(error.code, expected_code, "{name}");
-        assert!(fs::read_dir(destination.path()).unwrap().next().is_none());
-    }
+    let destination = tempfile::tempdir().unwrap();
+    let entries = list_archive(&engine, &fixture("traversal.tar"), None).unwrap();
+    let error = validate_archive_entries(&entries).unwrap_err();
+    assert_eq!(error.code, "unsafe_path");
+    assert!(fs::read_dir(destination.path()).unwrap().next().is_none());
+
+    // A link is left out of extraction instead of blocking the archive.
+    let entries = list_archive(&engine, &fixture("symlink.tar"), None).unwrap();
+    assert!(entries.iter().all(|entry| entry.is_link));
+    validate_archive_entries(&entries).unwrap();
 }
 
 #[cfg(unix)]

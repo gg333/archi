@@ -41,7 +41,7 @@
           Back to the Archi site
         </a>
         <h1>Security design</h1>
-        <p class="doc-meta"><strong>Applies to:</strong> Archi 0.5.x · <strong>Last reviewed:</strong> 30 August 2026</p>
+        <p class="doc-meta"><strong>Applies to:</strong> the version following Archi 0.5.0 · <strong>Last reviewed:</strong> 11 October 2026</p>
       </header>
 
       <article class="doc-body">
@@ -61,8 +61,9 @@
         <p>
           Archi treats archive contents, entry names, declared sizes, links, 7-Zip
           listing output, and extracted files as untrusted. The WebView displays
-          paginated metadata and progress; Rust owns process execution, filesystem
-          traversal, validation, and installation. The main window has a
+          archive metadata, loaded a page at a time, and progress; Rust owns process
+          execution, filesystem traversal, validation, and installation. The main
+          window has a
           <a href="https://github.com/gg333/archi/blob/main/src-tauri/capabilities/default.json">narrow Tauri permission set</a>.
         </p>
         <p>
@@ -75,76 +76,128 @@
         <h2>Extraction architecture</h2>
         <ol class="security-flow" aria-label="Archi extraction security pipeline">
           <li><strong>List</strong><span>7-Zip reads the untrusted archive and emits technical metadata.</span></li>
-          <li><strong>Validate declarations</strong><span>Rust rejects unsafe paths, links, depth, count, and normalized-name collisions.</span></li>
-          <li><strong>Stage</strong><span>Extraction writes into a job-owned temporary directory, not the destination.</span></li>
+          <li><strong>Validate declarations</strong><span>Rust rejects unsafe paths, excessive depth and count, and normalized-name collisions.</span></li>
+          <li><strong>Leave links out</strong><span>Link entries are excluded from what the engine is asked to extract.</span></li>
+          <li><strong>Stage</strong><span>Extraction writes into a job-owned staging directory, not the destination.</span></li>
           <li><strong>Monitor</strong><span>Rust checks actual expanded bytes and kills the child process when the configured ceiling is crossed.</span></li>
           <li><strong>Validate output</strong><span>The real filesystem tree is checked for links, special files, escapes, limits, and collisions.</span></li>
-          <li><strong>Install</strong><span>Conflicts and source overlap are preflighted, then regular files are installed through destination-local temporary files.</span></li>
+          <li><strong>Install</strong><span>Conflicts and source overlap are preflighted, then validated files are moved into the destination.</span></li>
         </ol>
 
         <h2>Listing and metadata validation</h2>
         <p>
           Archi lists before extracting. Its strict technical-list parser rejects
           lines it cannot represent rather than guessing. Declared paths must be
-          relative and use safe components; links are disabled; depth is limited to
-          100 components; and the entry ceiling is 1,000,000. Case folding and
-          Unicode normalization detect names that would collide on common
-          filesystems. Declared expansion is compared with the configured limit,
-          and an unknown or excessive total requires explicit approval.
-          <a href="https://github.com/gg333/archi/blob/main/src-tauri/src/safe_paths.rs#L450-L813">Source and validation rules</a>.
+          relative and use safe components; depth is limited to 100 components; and
+          the entry ceiling is 1,000,000. Case folding and Unicode normalization
+          detect names that would collide on common filesystems. Declared expansion
+          is compared with the configured limit, and an unknown or excessive total
+          requires explicit approval. A compressed tarball is listed by piping the
+          decompressed stream into a second engine process, without an intermediate
+          file, and listing can be cancelled.
+          <a href="https://github.com/gg333/archi/blob/main/src-tauri/src/safe_paths.rs">Validation rules</a>.
+        </p>
+
+        <h2>Links</h2>
+        <p>
+          Archi never recreates a link from an archive. Link entries are excluded
+          from the request sent to the engine. A symbolic link is skipped and
+          counted in the result. A hard link that names a regular file in the same
+          archive is written by Archi itself as a separate copy of that file; one
+          that names anything else is skipped. The staged output is still checked
+          independently, so a link created despite this fails the extraction.
+          <a href="https://github.com/gg333/archi/blob/main/src-tauri/src/commands.rs">Link handling</a>.
         </p>
 
         <h2>Private staged extraction and actual-output limits</h2>
         <p>
-          7-Zip writes into a job-owned temporary payload directory. While the
+          7-Zip writes into a job-owned payload directory. Entries are named to the
+          engine in a private list file with wildcard matching disabled. While the
           process runs, Rust periodically measures actual output and terminates the
           child if the configured byte ceiling is exceeded. It checks once more
           after the engine exits. The completed tree is then inspected directly;
           symbolic links, hard links, special files, unsafe paths, excessive depth,
           excessive entry count, and normalized collisions are rejected.
-          <a href="https://github.com/gg333/archi/blob/main/src-tauri/src/jobs.rs#L331-L360">Extraction monitor</a>
+          <a href="https://github.com/gg333/archi/blob/main/src-tauri/src/jobs.rs">Extraction monitor</a>
           and <a href="https://github.com/gg333/archi/blob/main/src-tauri/tests/security.rs">security tests</a>.
+        </p>
+        <p>
+          Staging is placed on the volume that will receive the result. When that
+          is not the volume holding the system temporary folder, staging is a hidden
+          folder beside the destination, removed when the job ends or at the next
+          launch after a crash.
         </p>
 
         <h2>Destination and archive integrity</h2>
         <p>
           Before installation, Archi resolves conflicts and refuses to overwrite the
-          source archive. Each regular file is copied to a temporary file beside its
-          final destination. New files use no-clobber persistence; replacement keeps
-          a backup and restores it if installation fails.
-          <a href="https://github.com/gg333/archi/blob/main/src-tauri/src/safe_paths.rs#L816-L1035">Destination installation source</a>.
+          source archive. Each validated file is moved from staging to its final name
+          with a rename that refuses to replace an existing file; replacement keeps a
+          backup and restores it if installation fails. When a move is not possible
+          the file is copied beside its destination first.
+          <a href="https://github.com/gg333/archi/blob/main/src-tauri/src/safe_paths.rs">Destination installation source</a>.
+        </p>
+        <p>
+          exFAT and FAT volumes offer no rename that refuses to replace. There Archi
+          checks that the name is free and then renames, which is not atomic.
         </p>
         <p>
           Archive modifications operate on a temporary copy beside the original.
           Archi detects if the source changes during the operation, validates the
           rewritten archive, preserves a backup during replacement, synchronizes the
-          result, and reports a recoverable copy if commit fails.
-          <a href="https://github.com/gg333/archi/blob/main/src-tauri/src/safe_paths.rs#L44-L175">Archive rewrite source</a>.
+          result, and reports a recoverable copy if commit fails. Replacing an
+          existing file inside an archive, an existing output file, or an existing
+          split-volume set each requires confirmation.
+          <a href="https://github.com/gg333/archi/blob/main/src-tauri/src/safe_paths.rs">Archive rewrite source</a>.
+        </p>
+
+        <h2>Passwords</h2>
+        <p>
+          Passwords are sent to the engine on standard input, never in process
+          arguments. The password for the archive you have open is kept in memory
+          until you close it, so you are not asked again; it is never written to
+          disk.
+          <a href="https://github.com/gg333/archi/blob/main/src-tauri/src/archive.rs">Password transport</a>.
         </p>
 
         <h2>macOS quarantine</h2>
         <p>
           When a source archive carries <code>com.apple.quarantine</code>, Archi
-          propagates it to staged output, installed files, previews, and rewritten
-          archives. If the destination filesystem explicitly reports that extended
-          attributes are unsupported, propagation is skipped because the filesystem
-          cannot store the attribute. Permission, read-only, storage, and other I/O
-          failures remain fatal.
-          <a href="https://github.com/gg333/archi/blob/main/src-tauri/src/safe_paths/quarantine.rs#L134-L171">Quarantine source and regression test</a>.
+          propagates it to staged output, installed files, previews, dragged-out
+          files, and rewritten archives. If the destination filesystem explicitly
+          reports that extended attributes are unsupported, propagation is skipped
+          because the filesystem cannot store the attribute. Permission, read-only,
+          storage, and other I/O failures remain fatal.
+          <a href="https://github.com/gg333/archi/blob/main/src-tauri/src/safe_paths/quarantine.rs">Quarantine source and regression test</a>.
         </p>
 
-        <h2>Open and Quick Look restrictions</h2>
+        <h2>Open, Quick Look, and drag-out</h2>
         <p>
           Open and Quick Look extract one selected regular file into an owner-only
           preview cache. Archi requires a declared size within the configured limit,
-          validates the actual extracted file, and blocks directories, links, special
-          files, executable extensions, executable permission bits, scripts, Mach-O,
-          PE, and ELF payloads. File contents are never sent through the WebView.
-          <a href="https://github.com/gg333/archi/blob/main/src-tauri/src/safe_paths.rs#L348-L449">Preview validation</a>.
+          validates the actual extracted file, and blocks directories, symbolic
+          links, special files, executable extensions, executable permission bits,
+          scripts, Mach-O, PE, and ELF payloads. File contents are never sent through
+          the WebView.
+          <a href="https://github.com/gg333/archi/blob/main/src-tauri/src/safe_paths.rs">Preview validation</a>.
+        </p>
+        <p>
+          Dragging a file to Finder is an extraction of that one file rather than an
+          Open: it uses the extraction size limit, allows scripts and executables,
+          and keeps the archive's quarantine attribute. Archi never launches it.
+          Preview and drag-out copies are removed when Archi quits and at the next
+          launch.
         </p>
         <p>
           These restrictions apply to Open and Quick Look. They do not prevent a user
           from extracting an executable and launching it manually.
+        </p>
+
+        <h2>Quitting during an operation</h2>
+        <p>
+          While an operation is running, Quit, logout, and closing the window are
+          refused until you choose to stop it. An operation that is already installing
+          its result is allowed to finish first.
         </p>
 
         <h2>What this design cannot guarantee</h2>
@@ -152,7 +205,8 @@
           <li>It cannot sandbox or eliminate vulnerabilities in 7-Zip, macOS, Tauri, WebKit, or other dependencies.</li>
           <li>It is not antivirus software and does not classify malware or guarantee that another application can safely open a document.</li>
           <li>Resource use during listing and explicitly approved unbounded extraction cannot be fully constrained.</li>
-          <li>ACLs, ownership, extended attributes, and platform-specific metadata do not round-trip across every format or filesystem.</li>
+          <li>Files cannot be installed atomically without replacement on filesystems that offer no exclusive rename, such as exFAT.</li>
+          <li>ACLs, ownership, extended attributes, hard-link relationships, and platform-specific metadata do not round-trip across every format or filesystem.</li>
           <li>Signing, notarization, hardened runtime, Content Security Policy, and narrow permissions reduce risk but do not create an App Sandbox around 7-Zip.</li>
         </ul>
         <p>

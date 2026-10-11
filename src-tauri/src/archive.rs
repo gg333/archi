@@ -5,7 +5,8 @@ use std::{
     fs::{self, File, OpenOptions},
     io::{Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
-    process::{Child, Command, ExitStatus, Output, Stdio},
+    process::{Child, ChildStdout, Command, ExitStatus, Output, Stdio},
+    thread,
 };
 
 pub const PINNED_ENGINE_VERSION: &str = "26.02";
@@ -139,6 +140,8 @@ pub struct CreationPlan {
     pub(crate) names: Vec<String>,
     single_file: Option<PathBuf>,
     listfile: tempfile::NamedTempFile,
+    // Holds the folder layout used when items are added beneath an archive folder.
+    _workspace: Option<tempfile::TempDir>,
 }
 
 impl CreationPlan {
@@ -150,6 +153,29 @@ impl CreationPlan {
             })
             .cloned()
     }
+}
+
+/// How an archive's entries are reached.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArchiveLayout {
+    Plain,
+    /// A TAR wrapped in one compressed stream (`.tar.gz`, `.tar.xz`, ...). Its entries are
+    /// listed and extracted through the decompressed stream instead of as one inner `.tar`.
+    CompressedTar,
+}
+
+#[derive(Debug)]
+pub struct ArchiveListing {
+    pub entries: Vec<ArchiveEntry>,
+    pub layout: ArchiveLayout,
+}
+
+#[derive(Debug)]
+pub(crate) struct ExtractionPlan {
+    layout: ArchiveLayout,
+    listfile: Option<tempfile::NamedTempFile>,
+    // 7-Zip trims trailing whitespace from list-file lines, so these names travel as switches.
+    switches: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -174,6 +200,8 @@ pub struct ArchiveEntry {
     pub method: Option<String>,
     pub is_link: bool,
     pub link_target: Option<String>,
+    /// A second name for another file in the archive, rather than a pointer to a path.
+    pub hard_link: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -255,22 +283,238 @@ pub fn list_archive(
     password: Option<&str>,
 ) -> Result<Vec<ArchiveEntry>, ArchiveError> {
     require_file(archive)?;
-    let mut args = vec![
+    let output = run(binary, &list_args(archive), password, None)?;
+    parse_list(&String::from_utf8_lossy(&output.stdout), archive)
+}
+
+fn list_args(archive: &Path) -> Vec<OsString> {
+    vec![
         "l".into(),
         "-slt".into(),
         "-ba".into(),
         "-sccUTF-8".into(),
         "--".into(),
-    ];
-    args.push(archive.as_os_str().to_owned());
-    let output = run(binary, &args, password, None)?;
-    parse_slt(
-        &String::from_utf8_lossy(&output.stdout),
-        fallback_entry_name(archive).as_deref(),
-    )
+        archive.as_os_str().to_owned(),
+    ]
+}
+
+pub(crate) fn spawn_list(
+    binary: &Path,
+    archive: &Path,
+    password: Option<&str>,
+    stdout: Stdio,
+    stderr: Stdio,
+) -> Result<Child, ArchiveError> {
+    require_file(archive)?;
+    spawn_command(binary, &list_args(archive), password, None, stdout, stderr)
+}
+
+pub(crate) fn parse_list(stdout: &str, archive: &Path) -> Result<Vec<ArchiveEntry>, ArchiveError> {
+    parse_slt(stdout, fallback_entry_name(archive).as_deref())
+}
+
+/// True when a listing is one compressed stream whose name says it should hold a TAR.
+pub(crate) fn may_hold_tar(archive: &Path, entries: &[ArchiveEntry]) -> bool {
+    is_compressed_tar_name(archive) && matches!(entries, [only] if !only.is_directory)
+}
+
+/// The decompressing half of a tarball listing; the caller owns the listing process.
+pub(crate) struct TarDecoder(Child);
+
+impl TarDecoder {
+    pub(crate) fn abandon(mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+
+    /// Returns `None` when the compressed stream does not hold a TAR archive.
+    pub(crate) fn finish(
+        self,
+        listed: bool,
+        stdout: &str,
+    ) -> Result<Option<Vec<ArchiveEntry>>, ArchiveError> {
+        let decoded = self.0.wait_with_output().map_err(|error| {
+            ArchiveError::new(
+                "engine_unavailable",
+                format!("Failed to wait for 7-Zip: {error}"),
+            )
+        })?;
+        let stream_damaged =
+            !decoded.status.success() && classify_failure(&decoded).code == "damaged_archive";
+        if stream_damaged || (listed && !decoded.status.success()) {
+            return Err(classify_failure(&decoded));
+        }
+        if !listed {
+            return Ok(None);
+        }
+        // A stream that is not a TAR can still "list" successfully with nothing in it.
+        let entries = parse_slt(stdout, None)?;
+        Ok((!entries.is_empty()).then_some(entries))
+    }
+}
+
+pub(crate) fn spawn_tar_list(
+    binary: &Path,
+    archive: &Path,
+    stdout: Stdio,
+    stderr: Stdio,
+) -> Result<(Child, TarDecoder), ArchiveError> {
+    let (mut decoder, stream) = spawn_tar_decoder(binary, archive, Stdio::piped())?;
+    let lister = Command::new(binary)
+        .args(["l", "-si", "-ttar", "-slt", "-ba", "-sccUTF-8"])
+        .env("LC_ALL", "C")
+        .stdin(Stdio::from(stream))
+        .stdout(stdout)
+        .stderr(stderr)
+        .spawn();
+    match lister {
+        Ok(lister) => Ok((lister, TarDecoder(decoder))),
+        Err(error) => {
+            let _ = decoder.kill();
+            let _ = decoder.wait();
+            Err(ArchiveError::new(
+                "engine_unavailable",
+                format!("Failed to start 7-Zip: {error}"),
+            ))
+        }
+    }
+}
+
+/// Lists an archive, looking inside compressed tarballs so their contents can be browsed.
+pub fn inspect_archive(
+    binary: &Path,
+    archive: &Path,
+    password: Option<&str>,
+) -> Result<ArchiveListing, ArchiveError> {
+    let entries = list_archive(binary, archive, password)?;
+    if may_hold_tar(archive, &entries) {
+        if let Some(entries) = list_compressed_tar(binary, archive)? {
+            return Ok(ArchiveListing {
+                entries,
+                layout: ArchiveLayout::CompressedTar,
+            });
+        }
+    }
+    Ok(ArchiveListing {
+        entries,
+        layout: ArchiveLayout::Plain,
+    })
+}
+
+fn is_compressed_tar_name(archive: &Path) -> bool {
+    let Some(name) = archive.file_name().and_then(|value| value.to_str()) else {
+        return false;
+    };
+    let lower = name.to_ascii_lowercase();
+    [
+        ".tar.gz", ".tar.bz2", ".tar.xz", ".tar.zst", ".tgz", ".tbz", ".tbz2", ".txz", ".tzst",
+    ]
+    .iter()
+    .any(|suffix| lower.ends_with(suffix))
+}
+
+fn spawn_tar_decoder(
+    binary: &Path,
+    archive: &Path,
+    stderr: Stdio,
+) -> Result<(Child, ChildStdout), ArchiveError> {
+    let mut decoder = Command::new(binary)
+        .args(["x", "-so", "-bd", "--"])
+        .arg(archive)
+        .env("LC_ALL", "C")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(stderr)
+        .spawn()
+        .map_err(|error| {
+            ArchiveError::new(
+                "engine_unavailable",
+                format!("Failed to start 7-Zip: {error}"),
+            )
+        })?;
+    match decoder.stdout.take() {
+        Some(stream) => Ok((decoder, stream)),
+        None => {
+            let _ = decoder.kill();
+            let _ = decoder.wait();
+            Err(ArchiveError::new(
+                "engine_unavailable",
+                "7-Zip stream output was unavailable",
+            ))
+        }
+    }
+}
+
+fn list_compressed_tar(
+    binary: &Path,
+    archive: &Path,
+) -> Result<Option<Vec<ArchiveEntry>>, ArchiveError> {
+    let (lister, decoder) = spawn_tar_list(binary, archive, Stdio::piped(), Stdio::piped())?;
+    match lister.wait_with_output() {
+        Ok(listed) => decoder.finish(
+            listed.status.success(),
+            &String::from_utf8_lossy(&listed.stdout),
+        ),
+        Err(error) => {
+            decoder.abandon();
+            Err(ArchiveError::new(
+                "engine_unavailable",
+                format!("Failed to wait for 7-Zip: {error}"),
+            ))
+        }
+    }
+}
+
+pub(crate) fn prepare_extraction(
+    entries: &[String],
+    layout: ArchiveLayout,
+) -> Result<ExtractionPlan, ArchiveError> {
+    let (switches, listed): (Vec<&String>, Vec<&String>) = entries
+        .iter()
+        .partition(|entry| entry.ends_with(char::is_whitespace));
+    let mut plan = ExtractionPlan {
+        layout,
+        listfile: None,
+        switches: switches.into_iter().cloned().collect(),
+    };
+    if entries
+        .iter()
+        .any(|entry| entry.is_empty() || entry.contains(['\n', '\r']))
+    {
+        return Err(ArchiveError::new(
+            "unsafe_path",
+            "Archive entry names cannot be empty or contain line breaks",
+        ));
+    }
+    if listed.is_empty() {
+        return Ok(plan);
+    }
+    let list_error = |error: std::io::Error| {
+        ArchiveError::new(
+            "staging_failed",
+            format!("Could not write the archive entry list: {error}"),
+        )
+    };
+    let mut listfile = tempfile::NamedTempFile::new().map_err(list_error)?;
+    for entry in listed {
+        writeln!(listfile, "{entry}").map_err(list_error)?;
+    }
+    listfile.flush().map_err(list_error)?;
+    plan.listfile = Some(listfile);
+    Ok(plan)
 }
 
 pub fn prepare_creation(inputs: &[PathBuf], output: &Path) -> Result<CreationPlan, ArchiveError> {
+    prepare_creation_with(inputs, output, false)
+}
+
+/// `replace_existing` allows an existing regular file at `output`, for callers whose
+/// user already confirmed the replacement (the system save panel asks before returning).
+pub(crate) fn prepare_creation_with(
+    inputs: &[PathBuf],
+    output: &Path,
+    replace_existing: bool,
+) -> Result<CreationPlan, ArchiveError> {
     if !output.is_absolute() || output.file_name().is_none() {
         return Err(ArchiveError::new(
             "invalid_destination",
@@ -278,6 +522,7 @@ pub fn prepare_creation(inputs: &[PathBuf], output: &Path) -> Result<CreationPla
         ));
     }
     match fs::symlink_metadata(output) {
+        Ok(metadata) if replace_existing && metadata.is_file() => {}
         Ok(_) => {
             return Err(ArchiveError::new(
                 "output_exists",
@@ -315,9 +560,11 @@ pub fn prepare_creation(inputs: &[PathBuf], output: &Path) -> Result<CreationPla
     )
 }
 
+/// Plans adding `inputs` beneath `folder` inside the archive; an empty folder is the root.
 pub(crate) fn prepare_addition(
     inputs: &[PathBuf],
     archive: &Path,
+    folder: &str,
 ) -> Result<CreationPlan, ArchiveError> {
     let archive = archive.canonicalize().map_err(|error| {
         ArchiveError::new(
@@ -325,7 +572,82 @@ pub(crate) fn prepare_addition(
             format!("Could not resolve the archive being modified: {error}"),
         )
     })?;
-    prepare_inputs(inputs, Some(&archive))
+    let plan = prepare_inputs(inputs, Some(&archive))?;
+    if folder.is_empty() {
+        Ok(plan)
+    } else {
+        relocate_plan(plan, folder)
+    }
+}
+
+/// 7-Zip stores each input under its path relative to the working directory. To store
+/// inputs beneath an archive folder, give it a private directory that contains that
+/// folder, with a link to each top-level input inside. The links are followed, not stored.
+#[cfg(unix)]
+fn relocate_plan(mut plan: CreationPlan, folder: &str) -> Result<CreationPlan, ArchiveError> {
+    let unsafe_folder = folder.starts_with('/')
+        || folder.contains(['\\', '\n', '\r'])
+        || folder
+            .split('/')
+            .any(|part| part.is_empty() || part == "." || part == "..");
+    if unsafe_folder {
+        return Err(ArchiveError::new(
+            "invalid_folder",
+            "The archive folder path is invalid",
+        ));
+    }
+    let workspace_error = |error: std::io::Error| {
+        ArchiveError::new(
+            "staging_failed",
+            format!("Could not prepare the archive folder layout: {error}"),
+        )
+    };
+    let workspace = tempfile::Builder::new()
+        .prefix("archive-app-add-")
+        .tempdir()
+        .map_err(workspace_error)?;
+    let base = workspace.path().join(folder);
+    fs::create_dir_all(&base).map_err(workspace_error)?;
+    let mut linked = std::collections::HashSet::new();
+    for name in &plan.names {
+        let top = name.split('/').next().unwrap_or(name);
+        if linked.insert(top) {
+            std::os::unix::fs::symlink(plan.root.join(top), base.join(top))
+                .map_err(workspace_error)?;
+        }
+    }
+    plan.names = plan
+        .names
+        .iter()
+        .map(|name| format!("{folder}/{name}"))
+        .collect();
+    plan.listfile = write_listfile(&plan.names)?;
+    plan.root = workspace.path().to_path_buf();
+    plan._workspace = Some(workspace);
+    Ok(plan)
+}
+
+#[cfg(not(unix))]
+fn relocate_plan(_plan: CreationPlan, _folder: &str) -> Result<CreationPlan, ArchiveError> {
+    Err(ArchiveError::new(
+        "invalid_folder",
+        "Adding into an archive folder is not available on this platform",
+    ))
+}
+
+fn write_listfile(names: &[String]) -> Result<tempfile::NamedTempFile, ArchiveError> {
+    let list_error = |error: std::io::Error| {
+        ArchiveError::new(
+            "staging_failed",
+            format!("Could not write the archive input list: {error}"),
+        )
+    };
+    let mut listfile = tempfile::NamedTempFile::new().map_err(list_error)?;
+    for name in names {
+        writeln!(listfile, "{name}").map_err(list_error)?;
+    }
+    listfile.flush().map_err(list_error)?;
+    Ok(listfile)
 }
 
 fn prepare_inputs(
@@ -427,26 +749,7 @@ fn prepare_inputs(
             &mut skipped_links,
         )?;
     }
-    let mut listfile = tempfile::NamedTempFile::new().map_err(|error| {
-        ArchiveError::new(
-            "staging_failed",
-            format!("Could not create an archive input list: {error}"),
-        )
-    })?;
-    for name in &names {
-        writeln!(listfile, "{name}").map_err(|error| {
-            ArchiveError::new(
-                "staging_failed",
-                format!("Could not write the archive input list: {error}"),
-            )
-        })?;
-    }
-    listfile.flush().map_err(|error| {
-        ArchiveError::new(
-            "staging_failed",
-            format!("Could not finish the archive input list: {error}"),
-        )
-    })?;
+    let listfile = write_listfile(&names)?;
 
     Ok(CreationPlan {
         root,
@@ -455,6 +758,7 @@ fn prepare_inputs(
         names,
         single_file,
         listfile,
+        _workspace: None,
     })
 }
 
@@ -657,7 +961,8 @@ pub fn extract_entries(
         )
     })?;
 
-    let args = extract_args(archive, destination, entries);
+    let plan = prepare_extraction(entries, ArchiveLayout::Plain)?;
+    let args = extract_args(archive, destination, &plan);
     run(binary, &args, password, None)
 }
 
@@ -665,7 +970,7 @@ pub(crate) fn spawn_extract_entries(
     binary: &Path,
     archive: &Path,
     destination: &Path,
-    entries: &[String],
+    plan: &ExtractionPlan,
     password: Option<&str>,
     stdout: Stdio,
     stderr: Stdio,
@@ -683,14 +988,44 @@ pub(crate) fn spawn_extract_entries(
             format!("Could not preserve macOS quarantine metadata: {error}"),
         )
     })?;
-    spawn_command(
-        binary,
-        &extract_args(archive, destination, entries),
-        password,
-        None,
-        stdout,
-        stderr,
-    )
+    if plan.layout == ArchiveLayout::Plain {
+        return spawn_command(
+            binary,
+            &extract_args(archive, destination, plan),
+            password,
+            None,
+            stdout,
+            stderr,
+        );
+    }
+    // The listing that chose this layout already decoded the whole stream successfully.
+    let (mut decoder, stream) = spawn_tar_decoder(binary, archive, Stdio::null())?;
+    let mut args: Vec<OsString> = vec!["x".into(), "-si".into(), "-ttar".into(), "-spd".into()];
+    args.extend(extract_switches(destination, plan));
+    let extractor = Command::new(binary)
+        .args(args)
+        .env("LC_ALL", "C")
+        .stdin(Stdio::from(stream))
+        .stdout(stdout)
+        .stderr(stderr)
+        .spawn();
+    match extractor {
+        Ok(extractor) => {
+            // Cancelling the extractor closes the pipe, which ends the decoder; reap it.
+            thread::spawn(move || {
+                let _ = decoder.wait();
+            });
+            Ok(extractor)
+        }
+        Err(error) => {
+            let _ = decoder.kill();
+            let _ = decoder.wait();
+            Err(ArchiveError::new(
+                "engine_unavailable",
+                format!("Failed to start 7-Zip: {error}"),
+            ))
+        }
+    }
 }
 
 pub(crate) fn engine_failure(status: &ExitStatus, stdout: &str, stderr: &str) -> ArchiveError {
@@ -1010,17 +1345,29 @@ fn require_file(path: &Path) -> Result<(), ArchiveError> {
     }
 }
 
-fn extract_args(archive: &Path, destination: &Path, entries: &[String]) -> Vec<OsString> {
-    let mut args = vec![
-        "x".into(),
+fn extract_args(archive: &Path, destination: &Path, plan: &ExtractionPlan) -> Vec<OsString> {
+    let mut args = vec!["x".into()];
+    args.extend(extract_switches(destination, plan));
+    args.extend(["--".into(), archive.as_os_str().to_owned()]);
+    args
+}
+
+fn extract_switches(destination: &Path, plan: &ExtractionPlan) -> Vec<OsString> {
+    let mut args: Vec<OsString> = vec![
         "-bsp1".into(),
         "-bb1".into(),
         "-y".into(),
         format!("-o{}", destination.display()).into(),
-        "--".into(),
-        archive.as_os_str().to_owned(),
     ];
-    args.extend(entries.iter().map(OsString::from));
+    if let Some(listfile) = &plan.listfile {
+        args.push("-scsUTF-8".into());
+        args.push(format!("-i@{}", listfile.path().display()).into());
+    }
+    args.extend(
+        plan.switches
+            .iter()
+            .map(|entry| format!("-i!{entry}").into()),
+    );
     args
 }
 
@@ -1352,10 +1699,17 @@ fn spawn_command(
     stderr: Stdio,
 ) -> Result<Child, ArchiveError> {
     let password = password.filter(|value| !value.is_empty());
-    if let Some(password) = password {
+    if password.is_some() {
+        // Passwords travel over stdin; only an inline `-p<password>` switch can leak one.
         if args
             .iter()
-            .any(|argument| argument.to_string_lossy().contains(password))
+            .take_while(|argument| *argument != "--")
+            .any(|argument| {
+                argument
+                    .to_string_lossy()
+                    .strip_prefix("-p")
+                    .is_some_and(|inline| !inline.is_empty())
+            })
         {
             return Err(ArchiveError::new(
                 "unsafe_password_transport",
@@ -1478,10 +1832,28 @@ fn parse_slt(text: &str, fallback_path: Option<&str>) -> Result<Vec<ArchiveEntry
         .filter(|block| !block.trim().is_empty())
         .collect::<Vec<_>>();
     let fallback_path = (blocks.len() == 1).then_some(fallback_path).flatten();
-    blocks
+    let mut entries = blocks
         .into_iter()
         .map(|block| parse_slt_entry(block, fallback_path))
-        .collect()
+        .collect::<Result<Vec<_>, _>>()?;
+    // A hard link is listed with no size of its own; show the size of the file it names.
+    if entries.iter().any(|entry| entry.hard_link) {
+        let sizes = entries
+            .iter()
+            .filter(|entry| !entry.is_link && !entry.is_directory)
+            .map(|entry| (entry.path.clone(), entry.size))
+            .collect::<std::collections::HashMap<_, _>>();
+        for entry in entries.iter_mut().filter(|entry| entry.hard_link) {
+            if let Some(size) = entry
+                .link_target
+                .as_ref()
+                .and_then(|target| sizes.get(target))
+            {
+                entry.size = *size;
+            }
+        }
+    }
+    Ok(entries)
 }
 
 fn parse_slt_entry(block: &str, fallback_path: Option<&str>) -> Result<ArchiveEntry, ArchiveError> {
@@ -1494,6 +1866,7 @@ fn parse_slt_entry(block: &str, fallback_path: Option<&str>) -> Result<ArchiveEn
     let mut method = None;
     let mut is_link = false;
     let mut link_target = None;
+    let mut hard_link = false;
 
     for line in block.lines() {
         if line.is_empty() || line == "Enter password:" {
@@ -1517,6 +1890,7 @@ fn parse_slt_entry(block: &str, fallback_path: Option<&str>) -> Result<ArchiveEn
             "Method" if !value.is_empty() => method = Some(value.to_string()),
             "Symbolic Link" | "Hard Link" if !value.is_empty() => {
                 is_link = true;
+                hard_link = key == "Hard Link";
                 link_target = Some(value.to_string());
             }
             _ => {}
@@ -1535,6 +1909,7 @@ fn parse_slt_entry(block: &str, fallback_path: Option<&str>) -> Result<ArchiveEn
         method,
         is_link,
         link_target,
+        hard_link,
     })
 }
 
@@ -1691,7 +2066,7 @@ mod tests {
             .unwrap();
 
             let rewrite = crate::safe_paths::ArchiveRewrite::create(&archive).unwrap();
-            let plan = prepare_addition(std::slice::from_ref(&added), &archive).unwrap();
+            let plan = prepare_addition(std::slice::from_ref(&added), &archive, "").unwrap();
             create_archive(
                 &engine,
                 rewrite.path(),
@@ -1775,7 +2150,8 @@ mod tests {
             let volumes = generated_archive_paths(&base, Some(8 * 1024)).unwrap();
             assert!(volumes.len() > 1);
             let installed =
-                crate::safe_paths::install_created_archives(&volumes, &base, &output).unwrap();
+                crate::safe_paths::install_created_archives(&volumes, &base, &output, false, false)
+                    .unwrap();
             test_archive(&engine, &installed[0], None).unwrap();
             extract_archive(&engine, &installed[0], &extracted, None).unwrap();
             assert_eq!(
@@ -1816,6 +2192,41 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(error.code, "unsafe_password_transport");
+    }
+
+    #[test]
+    fn accepts_passwords_that_appear_in_arguments_or_archive_names() {
+        let engine = bundled_engine().unwrap();
+        let root = scratch("password-substring");
+        fs::write(root.join("plain.txt"), "data").unwrap();
+        for (name, password) in [("secret.zip", "secret"), ("vault.zip", "1"), ("x.zip", "x")] {
+            let archive = root.join(name);
+            let plan = prepare_creation(&[root.join("plain.txt")], &archive).unwrap();
+            create_archive(
+                &engine,
+                &archive,
+                &plan,
+                ArchiveFormat::Zip,
+                CompressionLevel::Normal,
+                None,
+                Some(password),
+            )
+            .unwrap();
+            assert_eq!(
+                list_archive(&engine, &archive, Some(password))
+                    .unwrap()
+                    .len(),
+                1
+            );
+            test_archive(&engine, &archive, Some(password)).unwrap();
+            assert_eq!(
+                test_archive(&engine, &archive, Some("not-the-password"))
+                    .unwrap_err()
+                    .code,
+                "wrong_password"
+            );
+        }
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -1924,7 +2335,7 @@ mod tests {
             &bundled_engine().unwrap(),
             &archive,
             &staging,
-            &[],
+            &prepare_extraction(&[], ArchiveLayout::Plain).unwrap(),
             None,
             Stdio::null(),
             Stdio::null(),

@@ -8,7 +8,10 @@ describe("file drop routing", () => {
   it("routes drops by the current workspace", () => {
     expect(fileDropAction([], false, false, isArchive)).toBe("ignore");
     expect(fileDropAction(["/tmp/report.pdf"], true, false, isArchive)).toBe("create");
-    expect(fileDropAction(["/tmp/nested.zip"], false, true, isArchive)).toBe("add");
+    expect(fileDropAction(["/tmp/report.pdf"], false, true, isArchive)).toBe("add");
+    expect(fileDropAction(["/tmp/nested.zip", "/tmp/report.pdf"], false, true, isArchive)).toBe("add");
+    expect(fileDropAction(["/tmp/nested.zip"], false, true, isArchive)).toBe("ask");
+    expect(fileDropAction(["/tmp/one.zip"], false, false, isArchive)).toBe("open");
     expect(fileDropAction(["/tmp/one.zip", "/tmp/two.7z"], false, false, isArchive)).toBe("extract");
     expect(fileDropAction(["/tmp/one.zip", "/tmp/report.pdf"], false, false, isArchive)).toBe("create");
   });
