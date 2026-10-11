@@ -1560,7 +1560,8 @@ const errorTitles: Record<string, string> = {
   settings_unavailable: "Settings could not be read",
 };
 function errorTitle(code: string) { return errorTitles[code] ?? "Something went wrong"; }
-function formatRatio(entry: ArchiveEntry) { return !entry.size || entry.packedSize === null ? "—" : `${Math.round((1 - entry.packedSize / entry.size) * 100)}%`; }
+// Space saved. Tiny and encrypted entries can be stored larger than they are; that saves nothing.
+function formatRatio(entry: ArchiveEntry) { return !entry.size || entry.packedSize === null ? "—" : `${Math.max(0, Math.round((1 - entry.packedSize / entry.size) * 100))}%`; }
 function formatDuration(milliseconds: number) {
   if (milliseconds < 1000) return `${milliseconds} ms`;
   const seconds = Math.floor(milliseconds / 1000);

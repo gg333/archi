@@ -11,11 +11,11 @@
 <p align="center">
   <a href="https://gg333.github.io/archi/"><strong>Website</strong></a>
   ·
-  <a href="https://github.com/gg333/archi/releases/tag/v0.6.0"><strong>Download Archi 0.6.0</strong></a>
+  <a href="https://github.com/gg333/archi/releases/tag/v0.6.1"><strong>Download Archi 0.6.1</strong></a>
 </p>
 
 <p align="center">
-  <img src="website/assets/archi-window.jpg" width="980" alt="Archi 0.6.0 browsing a fictional sample archive with filename and file-type filters">
+  <img src="website/assets/archi-window.jpg" width="980" alt="Archi 0.6.1 browsing a fictional sample archive with filename and file-type filters">
 </p>
 
 Archi makes it easy to open, create, inspect, test, modify, and safely extract
@@ -49,8 +49,8 @@ Windows and Linux builds are not available yet.
 
 ## Install
 
-1. Download `Archi_0.6.0_universal.dmg` from the
-   [v0.6.0 release](https://github.com/gg333/archi/releases/tag/v0.6.0).
+1. Download `Archi_0.6.1_universal.dmg` from the
+   [v0.6.1 release](https://github.com/gg333/archi/releases/tag/v0.6.1).
 2. Open the DMG and drag **Archi** into **Applications**.
 3. Open Archi from Applications.
 

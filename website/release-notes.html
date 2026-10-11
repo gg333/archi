@@ -3,8 +3,8 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Release notes — Archi 0.6.0</title>
-  <meta name="description" content="Archi 0.6.0 opens compressed tarballs directly, extracts archives that contain links, improves in-place editing and Finder integration, and fixes problems found in a review of 0.5.0.">
+  <title>Release notes — Archi 0.6.1</title>
+  <meta name="description" content="Archi 0.6.1 fixes the Ratio column display. The 0.6 series opens compressed tarballs directly, extracts archives that contain links, improves in-place editing and Finder integration, and fixes problems found in a review of 0.5.0.">
   <meta name="color-scheme" content="light dark">
   <meta name="theme-color" content="#eef1f5" media="(prefers-color-scheme: light)">
   <meta name="theme-color" content="#17191d" media="(prefers-color-scheme: dark)">
@@ -29,7 +29,7 @@
         <a href="https://github.com/gg333/archi">GitHub</a>
       </nav>
       <button class="menu-toggle" type="button" aria-expanded="false" aria-controls="site-nav" aria-label="Open navigation menu"><span></span><span></span><span></span></button>
-      <a class="button button-primary header-download" href="https://github.com/gg333/archi/releases/download/v0.6.0/Archi_0.6.0_universal.dmg" data-download-link>Download</a>
+      <a class="button button-primary header-download" href="https://github.com/gg333/archi/releases/download/v0.6.1/Archi_0.6.1_universal.dmg" data-download-link>Download</a>
     </div>
   </header>
 
@@ -40,16 +40,21 @@
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="15 18 9 12 15 6"/></svg>
           Back to the Archi site
         </a>
-        <h1>Archi 0.6.0 release notes</h1>
-        <p class="doc-meta"><strong>Release status:</strong> Signed and notarized macOS build. The manual release checklist has not been completed for this build.</p>
+        <h1>Archi 0.6.1 release notes</h1>
+        <p class="doc-meta"><strong>Release status:</strong> PENDING</p>
       </header>
 
       <article class="doc-body">
         <p>
-          Archi 0.6.0 opens compressed tarballs directly, extracts archives that contain links, edits archives in place more naturally, and fixes a set of problems found in a full review of 0.5.0.
+          Archi 0.6.1 is Archi 0.6.0 with one display fix. The 0.6 series opens compressed tarballs directly, extracts archives that contain links, edits archives in place more naturally, and fixes a set of problems found in a full review of 0.5.0.
         </p>
 
-        <h2>Highlights</h2>
+        <h2>Fixed in 0.6.1</h2>
+        <ul>
+          <li>The Ratio column shows 0% for an entry stored larger than its original size, such as a tiny or encrypted file, instead of a cut-off negative number.</li>
+        </ul>
+
+        <h2>Highlights of 0.6</h2>
         <ul>
           <li>Open compressed tarballs (.tar.gz, .tar.bz2, .tar.xz, .tar.zst) straight to their contents, and extract, preview, or drag files from them.</li>
           <li>Extract archives that contain links: symbolic links are left out and counted, and hard links are extracted as copies of the file they name.</li>
@@ -112,7 +117,7 @@
 
         <h2>Distribution</h2>
         <ul>
-          <li>Product: Archi 0.6.0</li>
+          <li>Product: Archi 0.6.1</li>
           <li>Bundle identifier: <code>com.nitivar.archi</code></li>
           <li>Minimum system: macOS 13</li>
           <li>Build architecture: universal Apple Silicon and Intel</li>
@@ -128,21 +133,7 @@
         </p>
 
         <h2>Verification</h2>
-        <ul>
-          <li>Final artifact: <code>Archi_0.6.0_universal.dmg</code></li>
-          <li>SHA-256: <code>29916ec39a94442a82f093ef01790bb6266067169458d7a5336581be8105969d</code></li>
-          <li>Apple notarization: app submission <code>057213ed-b311-4458-964a-a8b040820637</code> and DMG submission <code>57adf059-dfdd-46e0-b192-74f17f61ace4</code>, both accepted</li>
-          <li>TypeScript/Vite production build and frontend tests</li>
-          <li>Rust formatting, strict Clippy, unit, engine-contract, and security tests</li>
-          <li>100,000-entry listing and selection gates, and the 1,000-operation real-engine stress gate</li>
-          <li>Universal Mach-O verification for Archi and the bundled <code>7zz</code></li>
-          <li>Deep strict code-signature verification</li>
-          <li>Apple notarization, stapling, and Gatekeeper assessment of the app and the DMG</li>
-          <li>Release verifier (<code>pnpm verify:macos</code>) against the <code>v0.6.0</code> tag</li>
-        </ul>
-        <p>
-          The packaged-application, Finder Services, and clean-machine checks in the release checklist have not been performed for this build and are not claimed here. The artifact was built from the commit immediately before this record; the two differ only in these release notes, the screenshot, and its captions, none of which are packaged into the app.
-        </p>
+        <p>PENDING</p>
       </article>
     </div>
   </main>

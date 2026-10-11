@@ -1,10 +1,14 @@
-# Archi 0.6.0 release notes
+# Archi 0.6.1 release notes
 
-**Release status:** Signed and notarized macOS build. The manual release checklist has not been completed for this build.
+**Release status:** PENDING
 
-Archi 0.6.0 opens compressed tarballs directly, extracts archives that contain links, edits archives in place more naturally, and fixes a set of problems found in a full review of 0.5.0.
+Archi 0.6.1 is Archi 0.6.0 with one display fix. The 0.6 series opens compressed tarballs directly, extracts archives that contain links, edits archives in place more naturally, and fixes a set of problems found in a full review of 0.5.0.
 
-## Highlights
+## Fixed in 0.6.1
+
+- The Ratio column shows 0% for an entry stored larger than its original size, such as a tiny or encrypted file, instead of a cut-off negative number.
+
+## Highlights of 0.6
 
 - Open compressed tarballs (.tar.gz, .tar.bz2, .tar.xz, .tar.zst) straight to their contents, and extract, preview, or drag files from them.
 - Extract archives that contain links: symbolic links are left out and counted, and hard links are extracted as copies of the file they name.
@@ -61,7 +65,7 @@ Archi 0.6.0 opens compressed tarballs directly, extracts archives that contain l
 
 ## Distribution
 
-- Product: Archi 0.6.0
+- Product: Archi 0.6.1
 - Bundle identifier: `com.nitivar.archi`
 - Minimum system: macOS 13
 - Architecture: universal Apple Silicon and Intel
@@ -72,15 +76,4 @@ See [Supported formats](SUPPORTED_FORMATS.md), [Known limitations](KNOWN_LIMITAT
 
 ## Verification
 
-- Final artifact: `Archi_0.6.0_universal.dmg`
-- SHA-256: `29916ec39a94442a82f093ef01790bb6266067169458d7a5336581be8105969d`
-- Apple notarization: app submission `057213ed-b311-4458-964a-a8b040820637` and DMG submission `57adf059-dfdd-46e0-b192-74f17f61ace4`, both accepted
-- TypeScript/Vite production build and frontend tests
-- Rust formatting, strict Clippy, unit, engine-contract, and security tests
-- 100,000-entry listing and selection gates, and the 1,000-operation real-engine stress gate
-- Universal Mach-O verification for Archi and the bundled `7zz`
-- Deep strict code-signature verification
-- Apple notarization, stapling, and Gatekeeper assessment of the app and the DMG
-- Release verifier (`pnpm verify:macos`) against the `v0.6.0` tag
-
-The packaged-application, Finder Services, and clean-machine checks in the release checklist have not been performed for this build and are not claimed here. The artifact was built from the commit immediately before this record; the two differ only in these release notes, the screenshot, and its captions, none of which are packaged into the app.
+PENDING
