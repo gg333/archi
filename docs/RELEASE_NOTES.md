@@ -1,6 +1,6 @@
 # Archi 0.6.1 release notes
 
-**Release status:** PENDING
+**Release status:** Signed and notarized macOS build. The manual release checklist is only partly complete for this build.
 
 Archi 0.6.1 is Archi 0.6.0 with one display fix. The 0.6 series opens compressed tarballs directly, extracts archives that contain links, edits archives in place more naturally, and fixes a set of problems found in a full review of 0.5.0.
 
@@ -76,4 +76,17 @@ See [Supported formats](SUPPORTED_FORMATS.md), [Known limitations](KNOWN_LIMITAT
 
 ## Verification
 
-PENDING
+- Final artifact: `Archi_0.6.1_universal.dmg`
+- SHA-256: `2a8d588e145d106560ad4e32954056f8b867d2305ce0f4c13bc1c4b8622d9d5d`
+- Apple notarization: app submission `7665bc00-8b6f-4513-a1f8-e430d050e54c` and DMG submission `2786b91d-a86b-4e23-abc4-73f018e25567`, both accepted
+- TypeScript/Vite production build and frontend tests
+- Rust formatting, strict Clippy, unit, engine-contract, and security tests
+- 100,000-entry listing and selection gates, and the 1,000-operation real-engine stress gate
+- Universal Mach-O verification for Archi and the bundled `7zz`
+- Deep strict code-signature verification
+- Apple notarization, stapling, and Gatekeeper assessment of the app and the DMG
+- Release verifier (`pnpm verify:macos`) against the `v0.6.1` tag
+
+Checked on the installed 0.6.0 app, which differs from 0.6.1 only by the Ratio display fix: opening archives with Archi closed and already running; the Extract Here, Test, Compress to ZIP, and Compress with Options Finder Services; the destination prompt of Extract to Folder; and the refusal to quit during a running job. The Ratio fix was checked in the 0.6.1 app.
+
+Not yet performed and not claimed here: Copy Path, creating, previewing, and modifying archives inside the app, cancellation and conflict handling, menus and keyboard shortcuts, drag-out, choosing a destination in Extract to Folder, and the clean-machine installation, upgrade, and uninstall checks. The artifact was built from the commit immediately before this record; the two differ only in these release notes and the screenshot, neither of which is packaged into the app.

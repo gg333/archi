@@ -41,7 +41,7 @@
           Back to the Archi site
         </a>
         <h1>Archi 0.6.1 release notes</h1>
-        <p class="doc-meta"><strong>Release status:</strong> PENDING</p>
+        <p class="doc-meta"><strong>Release status:</strong> Signed and notarized macOS build. The manual release checklist is only partly complete for this build.</p>
       </header>
 
       <article class="doc-body">
@@ -133,7 +133,24 @@
         </p>
 
         <h2>Verification</h2>
-        <p>PENDING</p>
+        <ul>
+          <li>Final artifact: <code>Archi_0.6.1_universal.dmg</code></li>
+          <li>SHA-256: <code>2a8d588e145d106560ad4e32954056f8b867d2305ce0f4c13bc1c4b8622d9d5d</code></li>
+          <li>Apple notarization: app submission <code>7665bc00-8b6f-4513-a1f8-e430d050e54c</code> and DMG submission <code>2786b91d-a86b-4e23-abc4-73f018e25567</code>, both accepted</li>
+          <li>TypeScript/Vite production build and frontend tests</li>
+          <li>Rust formatting, strict Clippy, unit, engine-contract, and security tests</li>
+          <li>100,000-entry listing and selection gates, and the 1,000-operation real-engine stress gate</li>
+          <li>Universal Mach-O verification for Archi and the bundled <code>7zz</code></li>
+          <li>Deep strict code-signature verification</li>
+          <li>Apple notarization, stapling, and Gatekeeper assessment of the app and the DMG</li>
+          <li>Release verifier (<code>pnpm verify:macos</code>) against the <code>v0.6.1</code> tag</li>
+        </ul>
+        <p>
+          Checked on the installed 0.6.0 app, which differs from 0.6.1 only by the Ratio display fix: opening archives with Archi closed and already running; the Extract Here, Test, Compress to ZIP, and Compress with Options Finder Services; the destination prompt of Extract to Folder; and the refusal to quit during a running job. The Ratio fix was checked in the 0.6.1 app.
+        </p>
+        <p>
+          Not yet performed and not claimed here: Copy Path, creating, previewing, and modifying archives inside the app, cancellation and conflict handling, menus and keyboard shortcuts, drag-out, choosing a destination in Extract to Folder, and the clean-machine installation, upgrade, and uninstall checks. The artifact was built from the commit immediately before this record; the two differ only in these release notes and the screenshot, neither of which is packaged into the app.
+        </p>
       </article>
     </div>
   </main>
