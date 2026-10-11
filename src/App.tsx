@@ -1510,7 +1510,8 @@ function formatModified(value: string | null, withSeconds = false) {
   const [year, month, day, hour, minute, second] = match.slice(1).map(Number);
   const date = new Date(year, month - 1, day, hour, minute, second);
   if (Number.isNaN(date.getTime())) return value;
-  return date.toLocaleString(undefined, { dateStyle: "medium", timeStyle: withSeconds ? "medium" : "short" });
+  // Joined by hand: the system's combined form ("11 Oct 2026 at 3:31 PM") is too wide for the column.
+  return `${date.toLocaleDateString(undefined, { dateStyle: "medium" })}, ${date.toLocaleTimeString(undefined, { timeStyle: withSeconds ? "medium" : "short" })}`;
 }
 const errorTitles: Record<string, string> = {
   damaged_archive: "The archive is damaged",

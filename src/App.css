@@ -167,7 +167,7 @@ th:nth-child(2), td:nth-child(2) { width: 76px; }
 th:nth-child(3), td:nth-child(3) { width: 92px; }
 th:nth-child(4), td:nth-child(4) { width: 104px; }
 th:nth-child(5), td:nth-child(5) { width: 60px; }
-th:nth-child(6), td:nth-child(6) { width: 156px; }
+th:nth-child(6), td:nth-child(6) { width: 184px; }
 th {
   position: sticky;
   top: 0;
