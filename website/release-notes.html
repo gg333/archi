@@ -41,7 +41,7 @@
           Back to the Archi site
         </a>
         <h1>Archi 0.6.0 release notes</h1>
-        <p class="doc-meta"><strong>Release status:</strong> Draft. Archi 0.6.0 has not been released.</p>
+        <p class="doc-meta"><strong>Release status:</strong> Signed and notarized macOS build. The manual release checklist has not been completed for this build.</p>
       </header>
 
       <article class="doc-body">
@@ -117,6 +117,7 @@
           <li>Minimum system: macOS 13</li>
           <li>Build architecture: universal Apple Silicon and Intel</li>
           <li>Archive engine: official 7-Zip 26.02 universal macOS binary</li>
+          <li>Packaging: Developer-ID-signed, notarized, and stapled DMG with hardened runtime</li>
         </ul>
 
         <p>
@@ -127,8 +128,20 @@
         </p>
 
         <h2>Verification</h2>
+        <ul>
+          <li>Final artifact: <code>Archi_0.6.0_universal.dmg</code></li>
+          <li>SHA-256: <code>29916ec39a94442a82f093ef01790bb6266067169458d7a5336581be8105969d</code></li>
+          <li>Apple notarization: app submission <code>057213ed-b311-4458-964a-a8b040820637</code> and DMG submission <code>57adf059-dfdd-46e0-b192-74f17f61ace4</code>, both accepted</li>
+          <li>TypeScript/Vite production build and frontend tests</li>
+          <li>Rust formatting, strict Clippy, unit, engine-contract, and security tests</li>
+          <li>100,000-entry listing and selection gates, and the 1,000-operation real-engine stress gate</li>
+          <li>Universal Mach-O verification for Archi and the bundled <code>7zz</code></li>
+          <li>Deep strict code-signature verification</li>
+          <li>Apple notarization, stapling, and Gatekeeper assessment of the app and the DMG</li>
+          <li>Release verifier (<code>pnpm verify:macos</code>) against the <code>v0.6.0</code> tag</li>
+        </ul>
         <p>
-          To be completed when the release is built: final artifact name and SHA-256, Apple notarization submission IDs, and the manual checks in the release checklist. Nothing in this section is claimed yet.
+          The packaged-application, Finder Services, and clean-machine checks in the release checklist have not been performed for this build and are not claimed here. The artifact was built from the commit immediately before this record; the two differ only in these release notes, the screenshot, and its captions, none of which are packaged into the app.
         </p>
       </article>
     </div>

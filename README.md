@@ -15,7 +15,7 @@
 </p>
 
 <p align="center">
-  <img src="website/assets/archi-window.jpg" width="980" alt="Archi 0.5.0 browsing a fictional sample archive with filename and file-type filters">
+  <img src="website/assets/archi-window.jpg" width="980" alt="Archi 0.6.0 browsing a fictional sample archive with filename and file-type filters">
 </p>
 
 Archi makes it easy to open, create, inspect, test, modify, and safely extract
