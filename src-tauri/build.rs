@@ -20,12 +20,12 @@ fn verify_sidecars() {
             .expect("Invalid binaries/SHA256SUMS entry");
         let path = Path::new("binaries").join(name);
         println!("cargo:rerun-if-changed={}", path.display());
-        let actual = format!(
-            "{:x}",
-            Sha256::digest(fs::read(&path).unwrap_or_else(|error| {
-                panic!("Could not read bundled engine {}: {error}", path.display())
-            }))
-        );
+        let actual = Sha256::digest(fs::read(&path).unwrap_or_else(|error| {
+            panic!("Could not read bundled engine {}: {error}", path.display())
+        }))
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
         assert_eq!(actual, expected, "Bundled engine checksum mismatch: {name}");
         target_verified |= name == target_name;
     }

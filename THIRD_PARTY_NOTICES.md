@@ -20,7 +20,7 @@ License material supplied in each upstream package is included under `third_part
 | JavaScript | @crabnebula/tauri-plugin-drag | 2.1.0 | MIT OR Apache-2.0 | https://github.com/crabnebula-dev/drag-rs |
 | JavaScript | @tauri-apps/api | 2.11.1 | Apache-2.0 OR MIT | git+https://github.com/tauri-apps/tauri.git |
 | JavaScript | @tauri-apps/plugin-dialog | 2.7.2 | MIT OR Apache-2.0 | https://github.com/tauri-apps/plugins-workspace |
-| JavaScript | @tauri-apps/plugin-notification | 2.3.3 | MIT OR Apache-2.0 | https://github.com/tauri-apps/plugins-workspace |
+| JavaScript | @tauri-apps/plugin-notification | 2.4.0 | MIT OR Apache-2.0 | https://github.com/tauri-apps/plugins-workspace |
 | JavaScript | react | 19.2.8 | MIT | https://github.com/react/react.git |
 | JavaScript | react-dom | 19.2.8 | MIT | https://github.com/react/react.git |
 | JavaScript | scheduler | 0.27.0 | MIT | https://github.com/facebook/react.git |
@@ -229,10 +229,10 @@ License material supplied in each upstream package is included under `third_part
 | Rust | tauri | 2.11.5 | Apache-2.0 OR MIT | https://github.com/tauri-apps/tauri |
 | Rust | tauri-codegen | 2.6.3 | Apache-2.0 OR MIT | https://github.com/tauri-apps/tauri |
 | Rust | tauri-macros | 2.6.3 | Apache-2.0 OR MIT | https://github.com/tauri-apps/tauri |
-| Rust | tauri-plugin-dialog | 2.7.2 | Apache-2.0 OR MIT | https://github.com/tauri-apps/plugins-workspace |
+| Rust | tauri-plugin-dialog | 2.7.3 | Apache-2.0 OR MIT | https://github.com/tauri-apps/plugins-workspace |
 | Rust | tauri-plugin-drag | 2.1.1 | Apache-2.0 OR MIT | registry+https://github.com/rust-lang/crates.io-index |
-| Rust | tauri-plugin-fs | 2.5.1 | Apache-2.0 OR MIT | https://github.com/tauri-apps/plugins-workspace |
-| Rust | tauri-plugin-notification | 2.3.3 | Apache-2.0 OR MIT | https://github.com/tauri-apps/plugins-workspace |
+| Rust | tauri-plugin-fs | 2.5.2 | Apache-2.0 OR MIT | https://github.com/tauri-apps/plugins-workspace |
+| Rust | tauri-plugin-notification | 2.4.0 | Apache-2.0 OR MIT | https://github.com/tauri-apps/plugins-workspace |
 | Rust | tauri-runtime | 2.11.3 | Apache-2.0 OR MIT | https://github.com/tauri-apps/tauri |
 | Rust | tauri-runtime-wry | 2.11.4 | Apache-2.0 OR MIT | https://github.com/tauri-apps/tauri |
 | Rust | tauri-utils | 2.9.3 | Apache-2.0 OR MIT | https://github.com/tauri-apps/tauri |
@@ -284,6 +284,6 @@ License material supplied in each upstream package is included under `third_part
 | Rust | zerovec | 0.11.8 | Unicode-3.0 | https://github.com/unicode-org/icu4x |
 | Rust | zerovec-derive | 0.11.6 | Unicode-3.0 | https://github.com/unicode-org/icu4x |
 | Rust | zmij | 1.0.23 | MIT | https://github.com/dtolnay/zmij |
-| Rust | zstd | 0.13.3 | MIT | https://github.com/gyscos/zstd-rs |
-| Rust | zstd-safe | 7.2.4 | MIT OR Apache-2.0 | https://github.com/gyscos/zstd-rs |
-| Rust | zstd-sys | 2.0.16+zstd.1.5.7 | MIT/Apache-2.0 | https://github.com/gyscos/zstd-rs |
+| Rust | zstd | 0.14.0 | BSD-3-Clause | https://github.com/gyscos/zstd-rs |
+| Rust | zstd-safe | 8.1.0 | BSD-3-Clause | https://github.com/gyscos/zstd-rs |
+| Rust | zstd-sys | 2.1.1+zstd.1.5.7 | BSD-3-Clause | https://github.com/gyscos/zstd-rs |
