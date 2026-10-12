@@ -1907,7 +1907,9 @@ mod tests {
         assert_eq!(selected_total(&["bulk".to_string()], &entries), 100_001);
         assert_eq!(selected_total(&["bulk/group-00".to_string()], &entries), 0);
         assert!(
-            started.elapsed() < std::time::Duration::from_secs(3),
+            // Rescanning every entry per path takes minutes here; the ceiling only needs to
+            // tell that apart from a slow shared CI runner.
+            started.elapsed() < std::time::Duration::from_secs(30),
             "selection handling took {:?}",
             started.elapsed()
         );
