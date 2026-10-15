@@ -21,7 +21,7 @@ cc = "=1.4.5"
 sha2 = "=0.11.0"
 
 [dependencies]
-tauri = { version = "=2.11.5", features = [] }
+tauri = { version = "=2.11.6", features = [] }
 tauri-plugin-dialog = "=2.7.3"
 tauri-plugin-notification = "=2.4.0"
 tauri-plugin-drag = "=2.1.1"
